@@ -1,7 +1,9 @@
-# main.py — HARIDWG PANEL v3.3
+# main.py — HARIDWG PANEL v3.5
 # Bot Discord + Web Dashboard + WebSocket realtime — chạy trên Render
 # Token truyền trực tiếp trong lệnh — không cần tokens.txt
 # Phân vùng rõ: OWNER / USER / SLASH
+# Lệnh /treongon thay cho /ngonnhay (đọc file ngonnhay* hoặc text tự viết)
+# Tự động tạo ngonnhay_1.txt → ngonnhay_6.txt khi khởi động (nếu chưa có)
 import os, json, asyncio, random, time, aiohttp, base64, re, unicodedata, logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -92,16 +94,17 @@ def print_banner(owner_name: str = "haridwg"):
 
     print()
     print(f"{CYAN}          ╔═══════════════════════════════════════════════════╗{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🎭  HARIDWG PANEL  •  v3.3  🎭              {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🎭  HARIDWG PANEL  •  v3.5  🎭              {CYAN}║{RESET}")
     print(f"{CYAN}          ║{WHITE}       Owner: {DARK_RED}{owner_name}{WHITE} — Multitool Discord     {CYAN}║{RESET}")
     print(f"{CYAN}          ╚═══════════════════════════════════════════════════╝{RESET}")
     print()
     print(f"{DARK_RED}{'─'*70}{RESET}")
     print(f"{BLOOD}  [•] Owner          : {WHITE}{owner_name}{RESET}")
     print(f"{BLOOD}  [•] Phân quyền     : {WHITE}OWNER / USER / SLASH{RESET}")
-    print(f"{BLOOD}  [•] Prefix         : {WHITE}t?help  t?spam  t?adduser  t?addowner{RESET}")
+    print(f"{BLOOD}  [•] Prefix         : {WHITE}t?help  t?spam  t?treongon  t?adduser{RESET}")
     print(f"{BLOOD}  [•] Web Dashboard  : {WHITE}ENABLED (Render){RESET}")
     print(f"{BLOOD}  [•] WebSocket      : {WHITE}ENABLED /ws?secret=***{RESET}")
+    print(f"{BLOOD}  [•] Auto-file      : {WHITE}ngonnhay_1.txt → ngonnhay_6.txt{RESET}")
     print(f"{BLOOD}  [•] Status         : {WHITE}ĐANG KHỞI ĐỘNG...{RESET}")
     print(f"{DARK_RED}{'─'*70}{RESET}")
     print()
@@ -122,8 +125,8 @@ USERS_FILE       = "users.json"
 MSG_FILE         = "noidung.txt"
 XA_DIR           = Path("Xả")
 FFMPEG           = os.getenv("FFMPEG_PATH", "ffmpeg")
+NGON_PREFIX      = "ngonnhay"
 
-# ─── Web Server (Render) ─────────────────────────────────────
 PORT             = int(os.getenv("PORT", "8080"))
 WS_SECRET        = os.getenv("WS_SECRET", "haridwg_secret_2025")
 BOT_START_TIME   = time.time()
@@ -179,6 +182,129 @@ def read_messages() -> List[str]:
         return [l.strip() for l in f if l.strip()]
 
 # ══════════════════════════════════════════════════════════════
+#  NGON — File scanner + source parser + auto-create
+# ══════════════════════════════════════════════════════════════
+def find_ngon_files() -> List[Path]:
+    """Quét file trong thư mục gốc có tên bắt đầu bằng 'ngonnhay'."""
+    results = []
+    try:
+        for f in Path(".").iterdir():
+            try:
+                if f.is_file() and f.name.lower().startswith(NGON_PREFIX):
+                    results.append(f)
+            except Exception:
+                continue
+    except Exception as e:
+        log.warning(f"find_ngon_files: {e}")
+    return sorted(results, key=lambda p: p.name.lower())
+
+def read_ngon_file(path: Path) -> List[str]:
+    """Đọc file — GIỮ NGUYÊN mọi dòng không trống.
+    Dòng bắt đầu bằng `#` VẪN ĐƯỢC GỬI (giữ y như file)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = [l.rstrip("\r\n") for l in f]
+        return [l for l in lines if l.strip()]
+    except Exception as e:
+        log.error(f"read_ngon_file {path}: {e}")
+        return []
+
+def parse_ngon_source(nguon: str) -> List[str]:
+    """
+    Xử lý nguồn nội dung:
+      1) Nếu là đường dẫn/tên file tồn tại → đọc file (giữ nguyên mọi dòng, kể cả `#`)
+      2) Ngược lại → coi là văn bản tự viết:
+         - Có `\\n` → tách theo dòng
+         - Có `|` → tách theo dấu sổ
+         - Không có → 1 câu duy nhất
+    """
+    if not nguon:
+        return []
+
+    p = Path(nguon)
+    if p.exists() and p.is_file():
+        return read_ngon_file(p)
+
+    for ext in (".txt", ".md", ".ngon", ""):
+        cand = Path(nguon + ext)
+        if cand.exists() and cand.is_file():
+            return read_ngon_file(cand)
+
+    text = nguon.strip()
+    if "\n" in text:
+        parts = [l.strip() for l in text.split("\n")]
+    elif "|" in text:
+        parts = [l.strip() for l in text.split("|")]
+    else:
+        parts = [text]
+    return [l for l in parts if l]
+
+# ─── Tự động tạo file ngonnhay mẫu khi khởi động ────────────
+DEFAULT_NGON_FILES = {
+    "ngonnhay_1.txt": """Xin chào, mình là haridwg
+Chúc bạn một ngày tốt lành 🌸
+Đừng quên uống nước nhé 💧
+HARIDWG PANEL đã online
+""",
+    "ngonnhay_2.txt": """# Đây là dòng comment nhưng vẫn được gửi
+Hôm nay trời đẹp ghê
+# Comment này cũng gửi luôn
+Cảm ơn đã đọc hết
+""",
+    "ngonnhay_3.txt": """Chúc bạn ngủ ngon 🌙
+Ngày mai lại cố gắng nhé
+Yêu thương nhiều 💕
+Mơ đẹp nha
+""",
+    "ngonnhay_4.txt": """Bot đang hoạt động bình thường ✅
+Mọi người có thể dùng lệnh /help
+Nhớ tuân thủ nội quy server
+Cảm ơn đã ủng hộ
+""",
+    "ngonnhay_5.txt": """HARIDWG PANEL v3.5
+Tính năng: treo voice + spam + xả nhạc
+Web dashboard: realtime monitoring
+WebSocket: điều khiển từ xa
+""",
+    "ngonnhay_6.txt": """Nếu bạn thấy tin nhắn này
+Có nghĩa là bot đang chạy
+Mọi thứ đều ổn định
+Không cần lo lắng gì đâu 😉
+""",
+}
+
+def ensure_ngon_files():
+    """Tự tạo file ngonnhay_1.txt → ngonnhay_6.txt nếu chưa có.
+    Nếu file đã tồn tại thì KHÔNG ghi đè."""
+    created = []
+    skipped = []
+    for name, content in DEFAULT_NGON_FILES.items():
+        p = Path(name)
+        if p.exists():
+            skipped.append(name)
+            continue
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(content)
+            created.append(name)
+        except Exception as e:
+            log.error(f"Không tạo được {name}: {e}")
+    if created:
+        log.info(f"📁 Đã tạo {len(created)} file ngonnhay mẫu: {', '.join(created)}")
+    if skipped:
+        log.info(f"📁 Đã có sẵn {len(skipped)} file (bỏ qua): {', '.join(skipped)}")
+    return created, skipped
+
+# ─── Autocomplete cho slash ─────────────────────────────────
+async def ngon_autocomplete(interaction: discord.Interaction, current: str):
+    files = find_ngon_files()
+    cur = (current or "").lower()
+    return [
+        app_commands.Choice(name=f.name, value=f.name)
+        for f in files if cur in f.name.lower()
+    ][:25]
+
+# ══════════════════════════════════════════════════════════════
 #  COOLDOWN
 # ══════════════════════════════════════════════════════════════
 def cd_left(uid: int) -> float:
@@ -228,7 +354,7 @@ async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
         "title": f"📋 [{OWNER_NAME}] LỆNH VỪA SỬ DỤNG",
         "color": 0xE7000B,
         "fields": fields,
-        "footer": {"text": f"{OWNER_NAME} PANEL • v3.3"},
+        "footer": {"text": f"{OWNER_NAME} PANEL • v3.5"},
     }
     try:
         async with aiohttp.ClientSession() as s:
@@ -505,7 +631,7 @@ async def prefix_help(ctx: commands.Context):
         value=(
             f"`{p}help` — Danh sách lệnh\n"
             f"`{p}spam <tokens> <channel_id> <count> [delay] <nội dung>`\n"
-            f"`{p}ngonnhay <tokens> <channel_id> <số_lần> [delay] [@user]`"
+            f"`{p}treongon <channel_id> <tokens> <số_lần> [delay|_] [nguon]`"
         ),
         inline=False,
     )
@@ -526,13 +652,13 @@ async def prefix_help(ctx: commands.Context):
     e.add_field(
         name="⚡ LỆNH SLASH",
         value=(
-            "`/help` `/treoroom` `/ngonnhay` `/xa`\n"
+            "`/help` `/treoroom` `/treongon` `/xa`\n"
             "`/dungtreoall` `/addprefix` `/leave`\n"
             "`/adduser` `/addowner`"
         ),
         inline=False,
     )
-    e.set_footer(text=f"{OWNER_NAME} PANEL • v3.3")
+    e.set_footer(text=f"{OWNER_NAME} PANEL • v3.5")
     await ctx.reply(embed=e, mention_author=False)
     asyncio.create_task(report(ctx.author, ctx.guild, ctx.channel, f"{p}help"))
 
@@ -586,50 +712,125 @@ async def prefix_spam(ctx: commands.Context, tokens: str, channel_id: str, count
         f"{ctx.prefix}spam <tokens:{len(tok_list)}> {channel_id} {count} {delay} {content}",
         f"Tokens: `{len(tok_list)}` | Channel: `{cid}` | Count: `{count}` | Delay: `{delay}s`"))
 
-# ─── [USER] t?ngonnhay ───────────────────────────────────────
-@bot.command(name="ngonnhay")
-async def prefix_ngonnhay(ctx: commands.Context, tokens: str, channel_id: str,
-                          so_lan: int = 1, delay: float = 3.0, user: Optional[discord.User] = None):
+# ─── [USER] t?treongon ───────────────────────────────────────
+@bot.command(name="treongon")
+async def prefix_treongon(ctx: commands.Context,
+                          channel_id: str,
+                          tokens: str,
+                          so_lan: int = 1,
+                          *args):
+    """
+    Cú pháp: t?treongon <channel_id> <tokens> <so_lan> [delay|_] [nguon]
+    - delay: tối thiểu 3 giây (nếu < 3 hoặc để trống → tự đẩy lên 3)
+    - nguon: tên file (ngonnhay*, .txt, .md) HOẶC text tự viết (nhiều câu cách nhau bằng |)
+    - Dùng "_" ở vị trí delay để bỏ qua, tự về 3s
+    """
     if not prefix_user_guard(ctx):
         try: await ctx.reply("⛔ Không có quyền hoặc đang cooldown.", mention_author=False)
         except Exception: pass
         return
+
     tok_list = parse_tokens(tokens)
     if not tok_list:
         await ctx.reply("❌ Token không hợp lệ."); return
+
     try: cid = int(channel_id)
     except ValueError:
         await ctx.reply("❌ ID kênh không hợp lệ."); return
-    if delay <= 0: delay = 3.0
-    msgs = read_messages()
-    if not msgs:
-        await ctx.reply(f"❌ File `{MSG_FILE}` rỗng."); return
 
-    tag_prefix = f"<@{user.id}> " if user else ""
+    # ── Parse delay + nguon ──
+    delay = 3.0
+    nguon_text = ""
+    parts = list(args)
+    if parts:
+        first = parts[0]
+        if first == "_":
+            nguon_text = " ".join(parts[1:]).strip()
+        else:
+            try:
+                delay = float(first)
+                nguon_text = " ".join(parts[1:]).strip()
+            except ValueError:
+                nguon_text = " ".join(parts).strip()
+
+    if delay < 3.0:
+        delay = 3.0
+
+    # ── Lấy nội dung ──
+    lines = parse_ngon_source(nguon_text)
+    used_from = ""
+    if lines:
+        p = Path(nguon_text)
+        if p.exists() and p.is_file():
+            used_from = f"file `{p.name}`"
+        else:
+            for ext in (".txt", ".md", ".ngon"):
+                if Path(nguon_text + ext).exists():
+                    used_from = f"file `{nguon_text}{ext}`"
+                    break
+        if not used_from:
+            used_from = "text tự viết"
+
+    if not lines:
+        lines = read_messages()
+        if lines:
+            used_from = f"file mặc định `{MSG_FILE}`"
+
+    if not lines:
+        await ctx.reply(
+            "❌ Không có nội dung để gửi.\n"
+            f"• Cú pháp: `{ctx.prefix}treongon <channel_id> <tokens> <so_lan> [delay|_] [nguon]`\n"
+            f"• VD: `{ctx.prefix}treongon 123456 MTIzNDU2 5 _ ngonnhay_1.txt`\n"
+            f"• VD: `{ctx.prefix}treongon 123456 MTIzNDU2 3 5 câu 1 | câu 2 | câu 3`")
+        return
+
+    # ── Chạy ──
     stop = asyncio.Event()
     spam_stop_flags[cid] = stop
 
     async def _token_loop(tok):
         for _ in range(so_lan if so_lan > 0 else 10**9):
             if stop.is_set(): return
-            for line in msgs:
+            for line in lines:
                 if stop.is_set(): return
-                content = line if line.startswith("<@") else f"{tag_prefix}{line}"
-                ok = await send_token_message(tok, cid, content)
-                if not ok: await asyncio.sleep(2)
-                else:      await asyncio.sleep(max(0.5, delay + delay*random.uniform(-0.15, 0.15)))
+                ok = await send_token_message(tok, cid, line)
+                if not ok:
+                    await asyncio.sleep(2)
+                else:
+                    await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.1, 0.1)))
 
     async def run_all():
         tasks = [asyncio.create_task(_token_loop(tok)) for tok in tok_list]
-        try: await asyncio.gather(*tasks)
-        except Exception as e: log.error(f"ngonnhay: {e}")
-        finally: spam_stop_flags.pop(cid, None)
+        try:
+            await asyncio.gather(*tasks)
+        except Exception as e:
+            log.error(f"treongon(prefix): {e}")
+        finally:
+            spam_stop_flags.pop(cid, None)
 
     asyncio.create_task(run_all())
-    await ctx.reply(f"🚀 Spam `{cid}` với {len(tok_list)} token | loops={so_lan} | delay={delay}s")
-    asyncio.create_task(report(ctx.author, ctx.guild, ctx.channel,
-        f"{ctx.prefix}ngonnhay <tokens:{len(tok_list)}> {channel_id} {so_lan} {delay} {user.id if user else ''}",
-        f"Tokens: `{len(tok_list)}` | Channel: `{cid}` | Loops: `{so_lan}` | Delay: `{delay}s`"))
+
+    preview = " | ".join(lines[:3])[:120] + (" ..." if len(lines) > 3 else "")
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    try:
+        await ctx.author.send(
+            f"🚀 **t?treongon** — kênh `{cid}`\n"
+            f"• Tokens: `{len(tok_list)}`\n"
+            f"• Lặp: `{so_lan if so_lan > 0 else '∞'}` lần\n"
+            f"• Delay: `{delay}s`\n"
+            f"• Nguồn: {used_from} ({len(lines)} câu)\n"
+            f"• Preview: {preview}")
+    except Exception:
+        await ctx.reply(f"🚀 Đang gửi — {used_from} ({len(lines)} câu), delay `{delay}s`.")
+
+    asyncio.create_task(report(
+        ctx.author, ctx.guild, ctx.channel,
+        f"{ctx.prefix}treongon {channel_id} <tokens:{len(tok_list)}> {so_lan} {delay} {nguon_text[:80]}",
+        f"Channel: `{cid}` | Tokens: `{len(tok_list)}` | Loops: `{so_lan}` | "
+        f"Delay: `{delay}s` | Nguồn: {used_from} | Câu: `{len(lines)}`"))
 
 # ─── [OWNER] t?adduser ───────────────────────────────────────
 @bot.command(name="adduser")
@@ -784,7 +985,7 @@ async def slash_help(inter: discord.Interaction):
     e.add_field(name="👤 USER", value=(
         "`/help` — Danh sách lệnh\n"
         "`/treoroom` — Treo token vào voice (DM bot)\n"
-        "`/ngonnhay` — Spam tin nhắn\n"
+        "`/treongon` — Nhắn nội dung từ file ngonnhay* hoặc text\n"
         "`/xa` — Phát nhạc trong voice"
     ), inline=False)
     e.add_field(name="👑 OWNER", value=(
@@ -889,54 +1090,106 @@ async def slash_dungtreoall(inter: discord.Interaction):
     await inter.response.send_message(f"🛑 Đã dừng **{n}** token đang treo.", ephemeral=True)
     asyncio.create_task(report(inter.user, inter.guild, inter.channel, "/dungtreoall", f"Đã dừng {n} token"))
 
-@bot.tree.command(name="ngonnhay", description="Spam tin nhắn kèm tag user")
+# ══════════════════════════════════════════════════════════════
+#  [USER] /treongon — Nhắn nội dung từ file/text (SLASH)
+# ══════════════════════════════════════════════════════════════
+@bot.tree.command(name="treongon", description="Nhắn nội dung từ file ngonnhay* hoặc text tự viết")
 @app_commands.describe(
+    channel_id="ID kênh cần nhắn",
     tokens="1 hoặc nhiều token, ngăn bởi dấu phẩy",
-    channel_id="ID kênh cần spam",
-    so_lan="Số lần lặp lại nội dung file (0 = vô hạn)",
-    delay="Delay giây giữa các tin (mặc định 3)",
-    user="User cần tag (id hoặc @mention)",
+    so_lan="Số lần lặp lại (0 = vô hạn, mặc định 1)",
+    delay="Delay giây giữa các tin (tối thiểu 3, để trống = 3)",
+    nguon="Chọn file 'ngonnhay*' hoặc gõ nội dung tự viết (nhiều câu → cách nhau bằng | )",
 )
-async def slash_ngonnhay(inter: discord.Interaction, tokens: str, channel_id: str,
-                         so_lan: int = 1, delay: float = 3.0,
-                         user: Optional[discord.User] = None):
+@app_commands.autocomplete(nguon=ngon_autocomplete)
+async def slash_treongon(inter: discord.Interaction,
+                         channel_id: str,
+                         tokens: str,
+                         so_lan: int = 1,
+                         delay: float = 3.0,
+                         nguon: Optional[str] = None):
     if not await slash_user_guard(inter): return
+
     tok_list = parse_tokens(tokens)
     if not tok_list:
         await inter.response.send_message("❌ Token không hợp lệ.", ephemeral=True); return
+
     try: cid = int(channel_id)
     except ValueError:
         await inter.response.send_message("❌ ID kênh không hợp lệ.", ephemeral=True); return
-    if delay <= 0: delay = 3.0
-    msgs = read_messages()
-    if not msgs:
-        await inter.response.send_message(f"❌ File `{MSG_FILE}` rỗng.", ephemeral=True); return
-    tag_prefix = f"<@{user.id}> " if user else ""
+
+    if delay is None or delay < 3.0:
+        delay = 3.0
+    if so_lan is None:
+        so_lan = 1
+
+    lines = parse_ngon_source(nguon or "")
+    used_from = ""
+    if lines:
+        p = Path(nguon)
+        if p.exists() and p.is_file():
+            used_from = f"file `{p.name}`"
+        else:
+            for ext in (".txt", ".md", ".ngon"):
+                if Path(nguon + ext).exists():
+                    used_from = f"file `{nguon}{ext}`"
+                    break
+        if not used_from:
+            used_from = "text tự viết"
+
+    if not lines:
+        lines = read_messages()
+        if lines:
+            used_from = f"file mặc định `{MSG_FILE}`"
+
+    if not lines:
+        await inter.response.send_message(
+            "❌ Không có nội dung nào để gửi.\n"
+            "• Chọn file `ngonnhay*` từ autocomplete\n"
+            "• Hoặc gõ nội dung trực tiếp (nhiều câu → cách nhau bằng `|`)\n"
+            f"• Hoặc tạo file `{MSG_FILE}` mặc định",
+            ephemeral=True)
+        return
+
     stop = asyncio.Event()
     spam_stop_flags[cid] = stop
 
     async def _token_loop(tok):
         for _ in range(so_lan if so_lan > 0 else 10**9):
             if stop.is_set(): return
-            for line in msgs:
+            for line in lines:
                 if stop.is_set(): return
-                content = line if line.startswith("<@") else f"{tag_prefix}{line}"
-                ok = await send_token_message(tok, cid, content)
-                if not ok: await asyncio.sleep(2)
-                else:      await asyncio.sleep(max(0.5, delay + delay*random.uniform(-0.15, 0.15)))
+                ok = await send_token_message(tok, cid, line)
+                if not ok:
+                    await asyncio.sleep(2)
+                else:
+                    await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.1, 0.1)))
 
     async def run_all():
         tasks = [asyncio.create_task(_token_loop(tok)) for tok in tok_list]
-        try: await asyncio.gather(*tasks)
-        except Exception as e: log.error(f"ngonnhay: {e}")
-        finally: spam_stop_flags.pop(cid, None)
+        try:
+            await asyncio.gather(*tasks)
+        except Exception as e:
+            log.error(f"treongon: {e}")
+        finally:
+            spam_stop_flags.pop(cid, None)
 
     asyncio.create_task(run_all())
+
+    preview = " | ".join(lines[:3])[:150] + (" ..." if len(lines) > 3 else "")
     await inter.response.send_message(
-        f"🚀 Spam `{cid}` với **{len(tok_list)}** token | loops={so_lan} | delay={delay}s",
+        f"🚀 **/treongon** — kênh `{cid}`\n"
+        f"• Tokens: `{len(tok_list)}`\n"
+        f"• Lặp: `{so_lan if so_lan > 0 else '∞'}` lần\n"
+        f"• Delay: `{delay}s`\n"
+        f"• Nguồn: {used_from} ({len(lines)} câu)\n"
+        f"• Preview: {preview}",
         ephemeral=True)
-    asyncio.create_task(report(inter.user, inter.guild, inter.channel, "/ngonnhay",
-        f"Tokens: `{len(tok_list)}` | Channel: `{cid}` | Loops: `{so_lan}` | Delay: `{delay}s`"))
+
+    asyncio.create_task(report(
+        inter.user, inter.guild, inter.channel, "/treongon",
+        f"Channel: `{cid}` | Tokens: `{len(tok_list)}` | Loops: `{so_lan}` | "
+        f"Delay: `{delay}s` | Nguồn: {used_from} | Câu: `{len(lines)}`"))
 
 @bot.tree.command(name="leave", description="Bot rời khỏi server này (owner)")
 async def slash_leave(inter: discord.Interaction):
@@ -1096,7 +1349,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="card-sub">kể từ khởi động</div>
   </div>
 </div>
-<div class="footer">HARIDWG PANEL • v3.3 • WebSocket Realtime<br>
+<div class="footer">HARIDWG PANEL • v3.5 • WebSocket Realtime<br>
 <a href="/api/status">/api/status</a> • <a href="/health">/health</a> • /ws</div>
 <script>
 let ws, reconnectTimer;
@@ -1306,6 +1559,7 @@ async def on_ready():
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👑 Owner gốc: {sorted(DEFAULT_OWNER_IDS)}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👑 Owner thêm: {sorted(extra_owners) or '—'}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👤 User thêm : {sorted(extra_users) or '—'}{Style.RESET_ALL}")
+    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 📁 File ngon  : {[f.name for f in find_ngon_files()] or '—'}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🌐 Dashboard : http://0.0.0.0:{PORT}{Style.RESET_ALL}")
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
 
@@ -1330,6 +1584,7 @@ if __name__ == "__main__":
     clear_console()
     print_banner(OWNER_NAME)
     XA_DIR.mkdir(exist_ok=True)
+    ensure_ngon_files()          # 👈 Tự tạo ngonnhay_1.txt → ngonnhay_6.txt
 
     try:
         asyncio.run(_run_all())
