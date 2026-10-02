@@ -1,0 +1,16 @@
+# ═══════════════════════════════════════════════════════════
+#  HARIDWG PANEL — Requirements
+#  Cài đặt: pip install -r requirements.txt
+# ═══════════════════════════════════════════════════════════
+
+# ─── Discord API chính ──────────────────────────────────────
+discord.py>=2.3.2
+
+# ─── Đọc biến môi trường từ .env ────────────────────────────
+python-dotenv>=1.0.0
+
+# ─── HTTP client async (dùng cho token spam + webhook) ──────
+aiohttp>=3.9.0
+
+# ─── Màu console (banner mặt nạ) ────────────────────────────
+colorama>=0.4.6
