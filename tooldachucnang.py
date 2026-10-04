@@ -1,9 +1,10 @@
-# main.py — HARIDWG PANEL v3.5
+# main.py — HARIDWG PANEL v4.0
 # Bot Discord + Web Dashboard + WebSocket realtime — chạy trên Render
-# Token truyền trực tiếp trong lệnh — không cần tokens.txt
-# Phân vùng rõ: OWNER / USER / SLASH
-# Lệnh /treongon thay cho /ngonnhay (đọc file ngonnhay* hoặc text tự viết)
-# Tự động tạo ngonnhay_1.txt → ngonnhay_6.txt khi khởi động (nếu chưa có)
+# Fix /dungtreo: dừng cả spam + treongon + treo room
+# /treongon mới: delay + channel_id + server_id + tokens + file (autocomplete hoặc upload)
+# /spam: gửi nội dung giữ nguyên định dạng (emoji, xuống dòng, dấu)
+# /customrpl: đổi tên panel
+# Auto-tạo ngontreo_1.txt → ngontreo_4.txt khi khởi động
 import os, json, asyncio, random, time, aiohttp, base64, re, unicodedata, logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -31,7 +32,7 @@ os.system("")
 def clear_console():
     os.system("cls" if os.name == "nt" else "clear")
 
-def print_banner(owner_name: str = "haridwg"):
+def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg"):
     RED       = "\033[38;2;255;0;0m"
     DARK_RED  = "\033[38;2;139;0;0m"
     BLOOD     = "\033[38;2;180;0;0m"
@@ -81,7 +82,6 @@ def print_banner(owner_name: str = "haridwg"):
         " ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═════╝  ╚══╝╚══╝  ╚═════╝ ",
     ]
     for line in title: print(f"{BLOOD}{line}{RESET}")
-
     sub = [
         "  ██████╗  █████╗ ███╗   ██╗███████╗██╗         ",
         "  ██╔══██╗██╔══██╗████╗  ██║██╔════╝██║         ",
@@ -94,17 +94,17 @@ def print_banner(owner_name: str = "haridwg"):
 
     print()
     print(f"{CYAN}          ╔═══════════════════════════════════════════════════╗{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🎭  HARIDWG PANEL  •  v3.5  🎭              {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.0  🎭          {CYAN}║{RESET}")
     print(f"{CYAN}          ║{WHITE}       Owner: {DARK_RED}{owner_name}{WHITE} — Multitool Discord     {CYAN}║{RESET}")
     print(f"{CYAN}          ╚═══════════════════════════════════════════════════╝{RESET}")
     print()
     print(f"{DARK_RED}{'─'*70}{RESET}")
+    print(f"{BLOOD}  [•] Panel          : {WHITE}{panel_name}{RESET}")
     print(f"{BLOOD}  [•] Owner          : {WHITE}{owner_name}{RESET}")
-    print(f"{BLOOD}  [•] Phân quyền     : {WHITE}OWNER / USER / SLASH{RESET}")
-    print(f"{BLOOD}  [•] Prefix         : {WHITE}t?help  t?spam  t?treongon  t?adduser{RESET}")
-    print(f"{BLOOD}  [•] Web Dashboard  : {WHITE}ENABLED (Render){RESET}")
+    print(f"{BLOOD}  [•] Prefix         : {WHITE}t?help  t?spam  t?treongon{RESET}")
+    print(f"{BLOOD}  [•] Web Dashboard  : {WHITE}ENABLED{RESET}")
     print(f"{BLOOD}  [•] WebSocket      : {WHITE}ENABLED /ws?secret=***{RESET}")
-    print(f"{BLOOD}  [•] Auto-file      : {WHITE}ngonnhay_1.txt → ngonnhay_6.txt{RESET}")
+    print(f"{BLOOD}  [•] Auto-file      : {WHITE}ngontreo_1→4 + ngonnhay_1→6{RESET}")
     print(f"{BLOOD}  [•] Status         : {WHITE}ĐANG KHỞI ĐỘNG...{RESET}")
     print(f"{DARK_RED}{'─'*70}{RESET}")
     print()
@@ -122,10 +122,12 @@ PREFIX_FILE      = "prefixes.json"
 INVITE_FILE      = "invites.json"
 OWNERS_FILE      = "owners.json"
 USERS_FILE       = "users.json"
+PANEL_FILE       = "panel.json"
 MSG_FILE         = "noidung.txt"
 XA_DIR           = Path("Xả")
 FFMPEG           = os.getenv("FFMPEG_PATH", "ffmpeg")
-NGON_PREFIX      = "ngonnhay"
+
+NGON_PREFIXES    = ("ngontreo", "ngonnhay")
 
 PORT             = int(os.getenv("PORT", "8080"))
 WS_SECRET        = os.getenv("WS_SECRET", "haridwg_secret_2025")
@@ -152,10 +154,29 @@ server_prefixes: Dict[str, str]  = _load(PREFIX_FILE)
 invites_cache:  Dict[str, dict]  = _load(INVITE_FILE)
 extra_owners:   set              = set(_load(OWNERS_FILE, []))
 extra_users:    set              = set(_load(USERS_FILE, []))
+panel_config:   dict             = _load(PANEL_FILE, {"name": "HARIDWG PANEL"})
+
+def get_panel_name() -> str:
+    return str(panel_config.get("name", "HARIDWG PANEL"))
+
+def set_panel_name(name: str):
+    panel_config["name"] = name
+    _save(PANEL_FILE, panel_config)
 
 user_cooldowns: Dict[int, float] = {}
 active_voice_workers: List = []
-spam_stop_flags: Dict[int, asyncio.Event] = {}
+
+# 🆕 Registry tất cả stop events (dùng cho /dungtreo)
+_active_stop_events: List[asyncio.Event] = []
+
+def register_stop() -> asyncio.Event:
+    evt = asyncio.Event()
+    _active_stop_events.append(evt)
+    return evt
+
+def unregister_stop(evt: asyncio.Event):
+    try: _active_stop_events.remove(evt)
+    except ValueError: pass
 
 # ══════════════════════════════════════════════════════════════
 #  PERMISSION
@@ -167,7 +188,7 @@ def is_user(uid: int) -> bool:
     return is_owner(uid) or uid in extra_users
 
 # ══════════════════════════════════════════════════════════════
-#  TOKEN PARSER
+#  TOKEN PARSER + SANITIZE
 # ══════════════════════════════════════════════════════════════
 def parse_tokens(raw) -> List[str]:
     if not raw: return []
@@ -179,19 +200,38 @@ def parse_tokens(raw) -> List[str]:
 def read_messages() -> List[str]:
     if not os.path.exists(MSG_FILE): return []
     with open(MSG_FILE, "r", encoding="utf-8") as f:
-        return [l.strip() for l in f if l.strip()]
+        return [l.rstrip("\r\n") for l in f if l.strip()]
+
+def sanitize(text: str, max_len: int = 2000) -> str:
+    """
+    Chỉ loại bỏ ký tự GÂY CRASH khi gửi Discord API:
+      - Surrogate (U+D800–U+DFFF): không hợp lệ UTF-8
+      - Null byte (\x00): Discord từ chối
+    GIỮ NGUYÊN: newline (\n), tab, emoji, tiếng Việt có dấu, mọi ký tự khác.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    text = re.sub(r'[\ud800-\udfff]', '', text)
+    text = text.replace('\x00', '')
+    if not text:
+        text = " "
+    if len(text) > max_len:
+        text = text[:max_len-3] + "..."
+    return text
 
 # ══════════════════════════════════════════════════════════════
-#  NGON — File scanner + source parser + auto-create
+#  NGON — File scanner + parser + auto-create
 # ══════════════════════════════════════════════════════════════
 def find_ngon_files() -> List[Path]:
-    """Quét file trong thư mục gốc có tên bắt đầu bằng 'ngonnhay'."""
+    """Quét file có tên bắt đầu bằng 'ngontreo' hoặc 'ngonnhay'."""
     results = []
     try:
         for f in Path(".").iterdir():
             try:
-                if f.is_file() and f.name.lower().startswith(NGON_PREFIX):
-                    results.append(f)
+                if f.is_file():
+                    name_lower = f.name.lower()
+                    if any(name_lower.startswith(p) for p in NGON_PREFIXES):
+                        results.append(f)
             except Exception:
                 continue
     except Exception as e:
@@ -199,8 +239,7 @@ def find_ngon_files() -> List[Path]:
     return sorted(results, key=lambda p: p.name.lower())
 
 def read_ngon_file(path: Path) -> List[str]:
-    """Đọc file — GIỮ NGUYÊN mọi dòng không trống.
-    Dòng bắt đầu bằng `#` VẪN ĐƯỢC GỬI (giữ y như file)."""
+    """Đọc file — giữ NGUYÊN mọi dòng không trống (kể cả dòng `#`)."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             lines = [l.rstrip("\r\n") for l in f]
@@ -210,26 +249,16 @@ def read_ngon_file(path: Path) -> List[str]:
         return []
 
 def parse_ngon_source(nguon: str) -> List[str]:
-    """
-    Xử lý nguồn nội dung:
-      1) Nếu là đường dẫn/tên file tồn tại → đọc file (giữ nguyên mọi dòng, kể cả `#`)
-      2) Ngược lại → coi là văn bản tự viết:
-         - Có `\\n` → tách theo dòng
-         - Có `|` → tách theo dấu sổ
-         - Không có → 1 câu duy nhất
-    """
+    """Nếu là file có thật → đọc file. Ngược lại coi là text tự viết."""
     if not nguon:
         return []
-
     p = Path(nguon)
     if p.exists() and p.is_file():
         return read_ngon_file(p)
-
     for ext in (".txt", ".md", ".ngon", ""):
         cand = Path(nguon + ext)
         if cand.exists() and cand.is_file():
             return read_ngon_file(cand)
-
     text = nguon.strip()
     if "\n" in text:
         parts = [l.strip() for l in text.split("\n")]
@@ -239,63 +268,64 @@ def parse_ngon_source(nguon: str) -> List[str]:
         parts = [text]
     return [l for l in parts if l]
 
-# ─── Tự động tạo file ngonnhay mẫu khi khởi động ────────────
+# ─── File mặc định tự tạo khi khởi động ─────────────────────
 DEFAULT_NGON_FILES = {
-    "ngonnhay_1.txt": """Xin chào, mình là haridwg
+    "ngontreo_1.txt": """Xin chào, mình là haridwg
 Chúc bạn một ngày tốt lành 🌸
 Đừng quên uống nước nhé 💧
 HARIDWG PANEL đã online
 """,
-    "ngonnhay_2.txt": """# Đây là dòng comment nhưng vẫn được gửi
+    "ngontreo_2.txt": """# Comment vẫn được gửi
 Hôm nay trời đẹp ghê
-# Comment này cũng gửi luôn
+# Dòng này cũng gửi luôn
 Cảm ơn đã đọc hết
 """,
-    "ngonnhay_3.txt": """Chúc bạn ngủ ngon 🌙
+    "ngontreo_3.txt": """Chúc bạn ngủ ngon 🌙
 Ngày mai lại cố gắng nhé
 Yêu thương nhiều 💕
 Mơ đẹp nha
 """,
-    "ngonnhay_4.txt": """Bot đang hoạt động bình thường ✅
+    "ngontreo_4.txt": """Bot đang hoạt động bình thường ✅
 Mọi người có thể dùng lệnh /help
 Nhớ tuân thủ nội quy server
 Cảm ơn đã ủng hộ
 """,
-    "ngonnhay_5.txt": """HARIDWG PANEL v3.5
-Tính năng: treo voice + spam + xả nhạc
-Web dashboard: realtime monitoring
-WebSocket: điều khiển từ xa
+    # Giữ ngonnhay_* cho tương thích ngược
+    "ngonnhay_1.txt": """Xin chào
+Chúc ngày tốt lành 🌸
 """,
-    "ngonnhay_6.txt": """Nếu bạn thấy tin nhắn này
-Có nghĩa là bot đang chạy
-Mọi thứ đều ổn định
-Không cần lo lắng gì đâu 😉
+    "ngonnhay_2.txt": """Test ngonnhay 2
+Dòng 2
+""",
+    "ngonnhay_3.txt": """Test ngonnhay 3
+""",
+    "ngonnhay_4.txt": """Test ngonnhay 4
+""",
+    "ngonnhay_5.txt": """Test ngonnhay 5
+""",
+    "ngonnhay_6.txt": """Test ngonnhay 6
 """,
 }
 
 def ensure_ngon_files():
-    """Tự tạo file ngonnhay_1.txt → ngonnhay_6.txt nếu chưa có.
-    Nếu file đã tồn tại thì KHÔNG ghi đè."""
-    created = []
-    skipped = []
+    """Tạo file ngontreo_1..4 + ngonnhay_1..6 nếu chưa có. KHÔNG ghi đè file có sẵn."""
+    created, skipped = [], []
     for name, content in DEFAULT_NGON_FILES.items():
         p = Path(name)
         if p.exists():
-            skipped.append(name)
-            continue
+            skipped.append(name); continue
         try:
-            with open(p, "w", encoding="utf-8") as f:
-                f.write(content)
+            with open(p, "w", encoding="utf-8") as f: f.write(content)
             created.append(name)
         except Exception as e:
             log.error(f"Không tạo được {name}: {e}")
     if created:
-        log.info(f"📁 Đã tạo {len(created)} file ngonnhay mẫu: {', '.join(created)}")
+        log.info(f"📁 Đã tạo {len(created)} file mẫu: {', '.join(created)}")
     if skipped:
-        log.info(f"📁 Đã có sẵn {len(skipped)} file (bỏ qua): {', '.join(skipped)}")
+        log.info(f"📁 Đã có sẵn {len(skipped)} file (bỏ qua)")
     return created, skipped
 
-# ─── Autocomplete cho slash ─────────────────────────────────
+# ─── Autocomplete ────────────────────────────────────────────
 async def ngon_autocomplete(interaction: discord.Interaction, current: str):
     files = find_ngon_files()
     cur = (current or "").lower()
@@ -351,10 +381,10 @@ async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
     if extra:
         fields.append({"name": "📝 Chi tiết", "value": extra[:1000], "inline": False})
     embed = {
-        "title": f"📋 [{OWNER_NAME}] LỆNH VỪA SỬ DỤNG",
+        "title": f"📋 [{get_panel_name()}] LỆNH VỪA SỬ DỤNG",
         "color": 0xE7000B,
         "fields": fields,
-        "footer": {"text": f"{OWNER_NAME} PANEL • v3.5"},
+        "footer": {"text": f"{get_panel_name()} • v4.0"},
     }
     try:
         async with aiohttp.ClientSession() as s:
@@ -362,7 +392,7 @@ async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
     except Exception as e: log.error(f"webhook: {e}")
 
 # ══════════════════════════════════════════════════════════════
-#  TOKEN HTTP (spam)
+#  TOKEN HTTP (send message via user token)
 # ══════════════════════════════════════════════════════════════
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -385,16 +415,8 @@ def _super_props() -> str:
     }
     return base64.b64encode(json.dumps(sp).encode()).decode()
 
-def sanitize(text: str, max_len: int = 2000) -> str:
-    text = unicodedata.normalize("NFC", text)
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
-    text = re.sub(r"[\ud800-\udfff]", "", text)
-    if not text.strip(): text = " "
-    if len(text) > max_len: text = text[:max_len-3] + "..."
-    return text
-
 async def send_token_message(token: str, channel_id: int, content: str) -> bool:
-    content = sanitize(content)
+    """Gửi 1 message qua user token. Nội dung đã được sanitize ở ngoài."""
     ua = random.choice(USER_AGENTS)
     headers = {
         "Authorization": token, "User-Agent": ua,
@@ -439,11 +461,8 @@ class VoiceWorker:
         self.token = token
         self.guild_id = guild_id
         self.channel_id = channel_id
-        self.mute = mute
-        self.deaf = deaf
-        self.stream = stream
-        self.ws = None
-        self.session = None
+        self.mute = mute; self.deaf = deaf; self.stream = stream
+        self.ws = None; self.session = None
         self.heartbeat_interval = 45
         self.stop_event = asyncio.Event()
         self.session_id = None
@@ -462,10 +481,8 @@ class VoiceWorker:
                             if data.get("op") == 7:
                                 log.warning(f"[{self.token[:8]}] reconnect")
                                 break
-                    except asyncio.TimeoutError:
-                        break
-                    except Exception:
-                        break
+                    except asyncio.TimeoutError: break
+                    except Exception: break
             except Exception as e:
                 log.error(f"[VOICE {self.token[:8]}] {e}")
                 await asyncio.sleep(5)
@@ -554,14 +571,21 @@ async def start_treo_room(tokens: List[str], guild_id: int, channel_id: int,
         await asyncio.sleep(0.4)
     await reply(f"✅ Đã treo **{started}** token vào kênh `{channel_id}` (guild `{guild_id}`).")
 
-def stop_all_treo() -> int:
+def stop_all_activity() -> dict:
+    """🆕 Dừng TẤT CẢ: voice workers + spam/treongon tasks."""
     global active_voice_workers
-    n = len(active_voice_workers)
+    n_voice = len(active_voice_workers)
     for w in active_voice_workers:
         try: w.stop()
         except Exception: pass
     active_voice_workers.clear()
-    return n
+
+    n_events = len(_active_stop_events)
+    for evt in _active_stop_events:
+        try: evt.set()
+        except Exception: pass
+
+    return {"voice": n_voice, "tasks": n_events}
 
 # ══════════════════════════════════════════════════════════════
 #  BOT SETUP
@@ -613,62 +637,40 @@ async def on_command_error(ctx: commands.Context, error):
     if isinstance(error, commands.CommandNotFound): return
     log.error(f"cmd error: {error}")
 
-# ─── [USER] t?help ───────────────────────────────────────────
 @bot.command(name="help")
 async def prefix_help(ctx: commands.Context):
-    if not prefix_user_guard(ctx):
-        try: await ctx.reply("⛔ Không có quyền hoặc đang cooldown.", mention_author=False)
-        except Exception: pass
-        return
+    if not prefix_user_guard(ctx): return
     p = ctx.prefix
     e = discord.Embed(
-        title=f"📖 {OWNER_NAME.upper()} PANEL — Danh sách lệnh",
-        description=f"Prefix của server này: `{p}` • Cooldown: `{int(COOLDOWN)}s`",
+        title=f"📖 {get_panel_name()} — Danh sách lệnh",
+        description=f"Prefix server này: `{p}` • Cooldown: `{int(COOLDOWN)}s`",
         color=0xE7000B,
     )
-    e.add_field(
-        name="👤 LỆNH USER",
-        value=(
-            f"`{p}help` — Danh sách lệnh\n"
-            f"`{p}spam <tokens> <channel_id> <count> [delay] <nội dung>`\n"
-            f"`{p}treongon <channel_id> <tokens> <số_lần> [delay|_] [nguon]`"
-        ),
-        inline=False,
-    )
-    e.add_field(
-        name="👑 LỆNH OWNER",
-        value=(
-            f"`{p}adduser <id|@user>` — Thêm user\n"
-            f"`{p}addowner <id|@user>` — Thêm owner\n"
-            f"`{p}removeuser <id|@user>` — Xoá user\n"
-            f"`{p}removeowner <id|@user>` — Xoá owner\n"
-            f"`{p}listperm` — Xem phân quyền\n"
-            f"`{p}leave` — Rời server\n"
-            f"`{p}addprefix <prefix>` — Đổi prefix\n"
-            f"`{p}dungtreoall` — Dừng tất cả token"
-        ),
-        inline=False,
-    )
-    e.add_field(
-        name="⚡ LỆNH SLASH",
-        value=(
-            "`/help` `/treoroom` `/treongon` `/xa`\n"
-            "`/dungtreoall` `/addprefix` `/leave`\n"
-            "`/adduser` `/addowner`"
-        ),
-        inline=False,
-    )
-    e.set_footer(text=f"{OWNER_NAME} PANEL • v3.5")
+    e.add_field(name="👤 USER", value=(
+        f"`{p}help` — Danh sách lệnh\n"
+        f"`{p}spam <tokens> <channel_id> <count> [delay] <nội dung>`\n"
+        f"`{p}treongon <channel_id> <tokens> <số_lần> [delay|_] [nguon]`"
+    ), inline=False)
+    e.add_field(name="👑 OWNER", value=(
+        f"`{p}adduser` / `{p}addowner` — Thêm quyền\n"
+        f"`{p}removeuser` / `{p}removeowner` — Xoá quyền\n"
+        f"`{p}listperm` — Xem phân quyền\n"
+        f"`{p}leave` — Rời server\n"
+        f"`{p}addprefix <prefix>` — Đổi prefix\n"
+        f"`{p}dungtreoall` — Dừng tất cả token + spam"
+    ), inline=False)
+    e.add_field(name="⚡ SLASH", value=(
+        "`/help` `/treoroom` `/treongon` `/spam` `/xa`\n"
+        "`/dungtreo` `/addprefix` `/leave`\n"
+        "`/adduser` `/addowner` `/customrpl`"
+    ), inline=False)
+    e.set_footer(text=f"{get_panel_name()} • v4.0")
     await ctx.reply(embed=e, mention_author=False)
     asyncio.create_task(report(ctx.author, ctx.guild, ctx.channel, f"{p}help"))
 
-# ─── [USER] t?spam ───────────────────────────────────────────
 @bot.command(name="spam")
 async def prefix_spam(ctx: commands.Context, tokens: str, channel_id: str, count: int, *args):
-    if not prefix_user_guard(ctx):
-        try: await ctx.reply("⛔ Không có quyền hoặc đang cooldown.", mention_author=False)
-        except Exception: pass
-        return
+    if not prefix_user_guard(ctx): return
     tok_list = parse_tokens(tokens)
     if not tok_list:
         await ctx.reply("❌ Token không hợp lệ."); return
@@ -687,8 +689,8 @@ async def prefix_spam(ctx: commands.Context, tokens: str, channel_id: str, count
         await ctx.reply(f"⚠️ Cú pháp: `{ctx.prefix}spam <tokens> <channel_id> <count> [delay] <nội dung>`")
         return
 
-    stop = asyncio.Event()
-    spam_stop_flags[cid] = stop
+    content = sanitize(content)
+    stop = register_stop()
 
     async def run_one(tok):
         sent = 0
@@ -698,9 +700,13 @@ async def prefix_spam(ctx: commands.Context, tokens: str, channel_id: str, count
             sent += 1
             await asyncio.sleep(max(0.5, delay + delay*random.uniform(-0.15, 0.15)))
 
-    for tok in tok_list:
-        asyncio.create_task(run_one(tok))
+    async def run_all():
+        tasks = [asyncio.create_task(run_one(tok)) for tok in tok_list]
+        try: await asyncio.gather(*tasks)
+        except Exception as e: log.error(f"prefix_spam: {e}")
+        finally: unregister_stop(stop)
 
+    asyncio.create_task(run_all())
     try: await ctx.message.delete()
     except Exception: pass
     try:
@@ -712,33 +718,17 @@ async def prefix_spam(ctx: commands.Context, tokens: str, channel_id: str, count
         f"{ctx.prefix}spam <tokens:{len(tok_list)}> {channel_id} {count} {delay} {content}",
         f"Tokens: `{len(tok_list)}` | Channel: `{cid}` | Count: `{count}` | Delay: `{delay}s`"))
 
-# ─── [USER] t?treongon ───────────────────────────────────────
 @bot.command(name="treongon")
-async def prefix_treongon(ctx: commands.Context,
-                          channel_id: str,
-                          tokens: str,
-                          so_lan: int = 1,
-                          *args):
-    """
-    Cú pháp: t?treongon <channel_id> <tokens> <so_lan> [delay|_] [nguon]
-    - delay: tối thiểu 3 giây (nếu < 3 hoặc để trống → tự đẩy lên 3)
-    - nguon: tên file (ngonnhay*, .txt, .md) HOẶC text tự viết (nhiều câu cách nhau bằng |)
-    - Dùng "_" ở vị trí delay để bỏ qua, tự về 3s
-    """
-    if not prefix_user_guard(ctx):
-        try: await ctx.reply("⛔ Không có quyền hoặc đang cooldown.", mention_author=False)
-        except Exception: pass
-        return
-
+async def prefix_treongon(ctx: commands.Context, channel_id: str, tokens: str,
+                          so_lan: int = 1, *args):
+    if not prefix_user_guard(ctx): return
     tok_list = parse_tokens(tokens)
     if not tok_list:
         await ctx.reply("❌ Token không hợp lệ."); return
-
     try: cid = int(channel_id)
     except ValueError:
         await ctx.reply("❌ ID kênh không hợp lệ."); return
 
-    # ── Parse delay + nguon ──
     delay = 3.0
     nguon_text = ""
     parts = list(args)
@@ -748,15 +738,11 @@ async def prefix_treongon(ctx: commands.Context,
             nguon_text = " ".join(parts[1:]).strip()
         else:
             try:
-                delay = float(first)
-                nguon_text = " ".join(parts[1:]).strip()
+                delay = float(first); nguon_text = " ".join(parts[1:]).strip()
             except ValueError:
                 nguon_text = " ".join(parts).strip()
+    if delay < 3.0: delay = 3.0
 
-    if delay < 3.0:
-        delay = 3.0
-
-    # ── Lấy nội dung ──
     lines = parse_ngon_source(nguon_text)
     used_from = ""
     if lines:
@@ -770,210 +756,118 @@ async def prefix_treongon(ctx: commands.Context,
                     break
         if not used_from:
             used_from = "text tự viết"
-
     if not lines:
         lines = read_messages()
-        if lines:
-            used_from = f"file mặc định `{MSG_FILE}`"
-
+        if lines: used_from = f"file mặc định `{MSG_FILE}`"
     if not lines:
-        await ctx.reply(
-            "❌ Không có nội dung để gửi.\n"
-            f"• Cú pháp: `{ctx.prefix}treongon <channel_id> <tokens> <so_lan> [delay|_] [nguon]`\n"
-            f"• VD: `{ctx.prefix}treongon 123456 MTIzNDU2 5 _ ngonnhay_1.txt`\n"
-            f"• VD: `{ctx.prefix}treongon 123456 MTIzNDU2 3 5 câu 1 | câu 2 | câu 3`")
-        return
+        await ctx.reply("❌ Không có nội dung để gửi."); return
 
-    # ── Chạy ──
-    stop = asyncio.Event()
-    spam_stop_flags[cid] = stop
-
+    stop = register_stop()
     async def _token_loop(tok):
         for _ in range(so_lan if so_lan > 0 else 10**9):
             if stop.is_set(): return
             for line in lines:
                 if stop.is_set(): return
-                ok = await send_token_message(tok, cid, line)
-                if not ok:
-                    await asyncio.sleep(2)
-                else:
-                    await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.1, 0.1)))
+                ok = await send_token_message(tok, cid, sanitize(line))
+                if not ok: await asyncio.sleep(2)
+                else: await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.1, 0.1)))
 
     async def run_all():
         tasks = [asyncio.create_task(_token_loop(tok)) for tok in tok_list]
-        try:
-            await asyncio.gather(*tasks)
-        except Exception as e:
-            log.error(f"treongon(prefix): {e}")
-        finally:
-            spam_stop_flags.pop(cid, None)
+        try: await asyncio.gather(*tasks)
+        except Exception as e: log.error(f"prefix_treongon: {e}")
+        finally: unregister_stop(stop)
 
     asyncio.create_task(run_all())
+    try: await ctx.message.delete()
+    except Exception: pass
+    await ctx.reply(f"🚀 Gửi {used_from} ({len(lines)} câu), delay `{delay}s`, loops={so_lan}")
 
-    preview = " | ".join(lines[:3])[:120] + (" ..." if len(lines) > 3 else "")
-    try:
-        await ctx.message.delete()
-    except Exception:
-        pass
-    try:
-        await ctx.author.send(
-            f"🚀 **t?treongon** — kênh `{cid}`\n"
-            f"• Tokens: `{len(tok_list)}`\n"
-            f"• Lặp: `{so_lan if so_lan > 0 else '∞'}` lần\n"
-            f"• Delay: `{delay}s`\n"
-            f"• Nguồn: {used_from} ({len(lines)} câu)\n"
-            f"• Preview: {preview}")
-    except Exception:
-        await ctx.reply(f"🚀 Đang gửi — {used_from} ({len(lines)} câu), delay `{delay}s`.")
-
-    asyncio.create_task(report(
-        ctx.author, ctx.guild, ctx.channel,
+    asyncio.create_task(report(ctx.author, ctx.guild, ctx.channel,
         f"{ctx.prefix}treongon {channel_id} <tokens:{len(tok_list)}> {so_lan} {delay} {nguon_text[:80]}",
-        f"Channel: `{cid}` | Tokens: `{len(tok_list)}` | Loops: `{so_lan}` | "
-        f"Delay: `{delay}s` | Nguồn: {used_from} | Câu: `{len(lines)}`"))
+        f"Channel: `{cid}` | Tokens: `{len(tok_list)}` | Loops: `{so_lan}` | Delay: `{delay}s` | Nguồn: {used_from}"))
 
-# ─── [OWNER] t?adduser ───────────────────────────────────────
 @bot.command(name="adduser")
 async def prefix_adduser(ctx: commands.Context, target: str):
-    if not prefix_owner_guard(ctx):
-        try: await ctx.reply("⛔ Chỉ owner mới dùng được.", mention_author=False)
-        except Exception: pass
-        return
+    if not prefix_owner_guard(ctx): return
     m = re.fullmatch(r"<@!?(\d+)>", target) or re.fullmatch(r"(\d{17,20})", target)
-    if not m:
-        await ctx.reply("❌ Cần **ID** hoặc **@mention**."); return
+    if not m: await ctx.reply("❌ Cần **ID** hoặc **@mention**."); return
     uid = int(m.group(1))
-    if uid in extra_users:
-        await ctx.reply(f"ℹ️ <@{uid}> đã có trong danh sách user."); return
-    if is_owner(uid):
-        await ctx.reply(f"ℹ️ <@{uid}> đã là owner."); return
-    extra_users.add(uid)
-    _save(USERS_FILE, sorted(extra_users))
+    if uid in extra_users: await ctx.reply(f"ℹ️ Đã có."); return
+    if is_owner(uid): await ctx.reply(f"ℹ️ Đã là owner."); return
+    extra_users.add(uid); _save(USERS_FILE, sorted(extra_users))
     await ctx.reply(f"✅ Đã thêm <@{uid}> vào **USER**.")
-    asyncio.create_task(report(ctx.author, ctx.guild, ctx.channel,
-        f"{ctx.prefix}adduser {uid}", f"Thêm user <@{uid}>"))
 
-# ─── [OWNER] t?addowner ──────────────────────────────────────
 @bot.command(name="addowner")
 async def prefix_addowner(ctx: commands.Context, target: str):
-    if not prefix_owner_guard(ctx):
-        try: await ctx.reply("⛔ Chỉ owner mới dùng được.", mention_author=False)
-        except Exception: pass
-        return
+    if not prefix_owner_guard(ctx): return
     m = re.fullmatch(r"<@!?(\d+)>", target) or re.fullmatch(r"(\d{17,20})", target)
-    if not m:
-        await ctx.reply("❌ Cần **ID** hoặc **@mention**."); return
+    if not m: await ctx.reply("❌ Cần **ID** hoặc **@mention**."); return
     uid = int(m.group(1))
-    if is_owner(uid):
-        await ctx.reply(f"ℹ️ <@{uid}> đã là owner."); return
-    extra_owners.add(uid)
-    extra_users.discard(uid)
-    _save(OWNERS_FILE, sorted(extra_owners))
-    _save(USERS_FILE, sorted(extra_users))
+    if is_owner(uid): await ctx.reply(f"ℹ️ Đã là owner."); return
+    extra_owners.add(uid); extra_users.discard(uid)
+    _save(OWNERS_FILE, sorted(extra_owners)); _save(USERS_FILE, sorted(extra_users))
     await ctx.reply(f"✅ Đã thêm <@{uid}> vào **OWNER**.")
-    asyncio.create_task(report(ctx.author, ctx.guild, ctx.channel,
-        f"{ctx.prefix}addowner {uid}", f"Thêm owner <@{uid}>"))
 
-# ─── [OWNER] t?removeuser ────────────────────────────────────
 @bot.command(name="removeuser")
 async def prefix_removeuser(ctx: commands.Context, target: str):
-    if not prefix_owner_guard(ctx):
-        try: await ctx.reply("⛔ Chỉ owner mới dùng được.", mention_author=False)
-        except Exception: pass
-        return
+    if not prefix_owner_guard(ctx): return
     m = re.fullmatch(r"<@!?(\d+)>", target) or re.fullmatch(r"(\d{17,20})", target)
-    if not m:
-        await ctx.reply("❌ Cần **ID** hoặc **@mention**."); return
+    if not m: await ctx.reply("❌ ID không hợp lệ."); return
     uid = int(m.group(1))
     if uid in extra_users:
-        extra_users.discard(uid)
-        _save(USERS_FILE, sorted(extra_users))
-        await ctx.reply(f"🗑️ Đã xoá <@{uid}> khỏi **USER**.")
-    else:
-        await ctx.reply(f"ℹ️ <@{uid}> không có trong danh sách user.")
+        extra_users.discard(uid); _save(USERS_FILE, sorted(extra_users))
+        await ctx.reply(f"🗑️ Đã xoá <@{uid}>.")
+    else: await ctx.reply("ℹ️ Không có trong danh sách.")
 
-# ─── [OWNER] t?removeowner ───────────────────────────────────
 @bot.command(name="removeowner")
 async def prefix_removeowner(ctx: commands.Context, target: str):
-    if not prefix_owner_guard(ctx):
-        try: await ctx.reply("⛔ Chỉ owner mới dùng được.", mention_author=False)
-        except Exception: pass
-        return
+    if not prefix_owner_guard(ctx): return
     m = re.fullmatch(r"<@!?(\d+)>", target) or re.fullmatch(r"(\d{17,20})", target)
-    if not m:
-        await ctx.reply("❌ Cần **ID** hoặc **@mention**."); return
+    if not m: await ctx.reply("❌ ID không hợp lệ."); return
     uid = int(m.group(1))
-    if uid in DEFAULT_OWNER_IDS:
-        await ctx.reply("🚫 Không thể xoá **owner gốc**."); return
+    if uid in DEFAULT_OWNER_IDS: await ctx.reply("🚫 Không xoá được owner gốc."); return
     if uid in extra_owners:
-        extra_owners.discard(uid)
-        _save(OWNERS_FILE, sorted(extra_owners))
-        await ctx.reply(f"🗑️ Đã xoá <@{uid}> khỏi **OWNER**.")
-    else:
-        await ctx.reply(f"ℹ️ <@{uid}> không có trong danh sách owner.")
+        extra_owners.discard(uid); _save(OWNERS_FILE, sorted(extra_owners))
+        await ctx.reply(f"🗑️ Đã xoá <@{uid}>.")
+    else: await ctx.reply("ℹ️ Không có trong danh sách.")
 
-# ─── [OWNER] t?listperm ──────────────────────────────────────
 @bot.command(name="listperm")
 async def prefix_listperm(ctx: commands.Context):
-    if not prefix_owner_guard(ctx):
-        try: await ctx.reply("⛔ Chỉ owner mới dùng được.", mention_author=False)
-        except Exception: pass
-        return
-    e = discord.Embed(title=f"🔐 Phân quyền — {OWNER_NAME.upper()} PANEL", color=0xE7000B)
+    if not prefix_owner_guard(ctx): return
+    e = discord.Embed(title=f"🔐 Phân quyền — {get_panel_name()}", color=0xE7000B)
     e.add_field(name=f"👑 OWNER GỐC ({len(DEFAULT_OWNER_IDS)})",
-                value="\n".join(f"• <@{u}> `{u}`" for u in sorted(DEFAULT_OWNER_IDS)) or "—",
-                inline=False)
+                value="\n".join(f"• <@{u}>" for u in sorted(DEFAULT_OWNER_IDS)) or "—", inline=False)
     e.add_field(name=f"👑 OWNER THÊM ({len(extra_owners)})",
-                value="\n".join(f"• <@{u}> `{u}`" for u in sorted(extra_owners)) or "—",
-                inline=False)
+                value="\n".join(f"• <@{u}>" for u in sorted(extra_owners)) or "—", inline=False)
     e.add_field(name=f"👤 USER ({len(extra_users)})",
-                value="\n".join(f"• <@{u}> `{u}`" for u in sorted(extra_users)) or "—",
-                inline=False)
-    await ctx.reply(embed=e, mention_author=False)
+                value="\n".join(f"• <@{u}>" for u in sorted(extra_users)) or "—", inline=False)
+    await ctx.reply(embed=e)
 
-# ─── [OWNER] t?addprefix ─────────────────────────────────────
 @bot.command(name="addprefix")
 async def prefix_addprefix(ctx: commands.Context, new_prefix: str):
-    if not prefix_owner_guard(ctx):
-        try: await ctx.reply("⛔ Chỉ owner mới dùng được.", mention_author=False)
-        except Exception: pass
-        return
-    if ctx.guild is None:
-        await ctx.reply("⚠️ Chỉ dùng trong server."); return
-    if not new_prefix or len(new_prefix) > 5:
-        await ctx.reply("❌ Prefix phải từ 1-5 ký tự."); return
+    if not prefix_owner_guard(ctx): return
+    if ctx.guild is None: await ctx.reply("⚠️ Chỉ dùng trong server."); return
+    if not new_prefix or len(new_prefix) > 5: await ctx.reply("❌ Prefix 1-5 ký tự."); return
     server_prefixes[str(ctx.guild.id)] = new_prefix
     _save(PREFIX_FILE, server_prefixes)
-    await ctx.reply(f"✅ Đã đổi prefix server này thành `{new_prefix}`.")
-    asyncio.create_task(report(ctx.author, ctx.guild, ctx.channel,
-        f"{ctx.prefix}addprefix {new_prefix}", f"Prefix mới: `{new_prefix}`"))
+    await ctx.reply(f"✅ Đã đổi prefix thành `{new_prefix}`.")
 
-# ─── [OWNER] t?leave ─────────────────────────────────────────
 @bot.command(name="leave")
 async def prefix_leave(ctx: commands.Context):
-    if not prefix_owner_guard(ctx):
-        try: await ctx.reply("⛔ Chỉ owner mới dùng được.", mention_author=False)
-        except Exception: pass
-        return
-    if ctx.guild is None:
-        await ctx.reply("⚠️ Chỉ dùng trong server."); return
+    if not prefix_owner_guard(ctx): return
+    if ctx.guild is None: await ctx.reply("⚠️ Chỉ dùng trong server."); return
     name, gid = ctx.guild.name, ctx.guild.id
     await ctx.reply(f"👋 Rời `{name}`...")
     asyncio.create_task(report(ctx.author, ctx.guild, ctx.channel, f"{ctx.prefix}leave", f"Rời guild `{gid}`"))
     try: await ctx.guild.leave()
     except Exception as e: log.error(f"leave: {e}")
 
-# ─── [OWNER] t?dungtreoall ───────────────────────────────────
 @bot.command(name="dungtreoall")
 async def prefix_dungtreoall(ctx: commands.Context):
-    if not prefix_owner_guard(ctx):
-        try: await ctx.reply("⛔ Chỉ owner mới dùng được.", mention_author=False)
-        except Exception: pass
-        return
-    n = stop_all_treo()
-    await ctx.reply(f"🛑 Đã dừng **{n}** token đang treo.")
-    asyncio.create_task(report(ctx.author, ctx.guild, ctx.channel,
-        f"{ctx.prefix}dungtreoall", f"Đã dừng {n} token"))
+    if not prefix_owner_guard(ctx): return
+    r = stop_all_activity()
+    await ctx.reply(f"🛑 Đã dừng **{r['voice']}** voice + **{r['tasks']}** task spam/treongon.")
 
 # ══════════════════════════════════════════════════════════════
 #  SLASH COMMANDS
@@ -981,70 +875,74 @@ async def prefix_dungtreoall(ctx: commands.Context):
 @bot.tree.command(name="help", description="Danh sách lệnh slash")
 async def slash_help(inter: discord.Interaction):
     if not await slash_user_guard(inter): return
-    e = discord.Embed(title=f"⚡ {OWNER_NAME.upper()} PANEL — Slash Commands", color=0xE7000B)
+    e = discord.Embed(title=f"⚡ {get_panel_name()} — Slash", color=0xE7000B)
     e.add_field(name="👤 USER", value=(
         "`/help` — Danh sách lệnh\n"
-        "`/treoroom` — Treo token vào voice (DM bot)\n"
-        "`/treongon` — Nhắn nội dung từ file ngonnhay* hoặc text\n"
+        "`/treoroom` — Treo voice (DM bot)\n"
+        "`/treongon` — Nhắn từ file/text\n"
+        "`/spam` — Spam nội dung giữ nguyên định dạng\n"
         "`/xa` — Phát nhạc trong voice"
     ), inline=False)
     e.add_field(name="👑 OWNER", value=(
-        "`/dungtreoall` — Dừng tất cả token\n"
-        "`/addprefix` — Đổi prefix server\n"
-        "`/leave` — Rời server\n"
-        "`/adduser` — Thêm user\n"
-        "`/addowner` — Thêm owner"
+        "`/dungtreo` — Dừng tất cả (voice + spam)\n"
+        "`/addprefix` `/leave`\n"
+        "`/adduser` `/addowner`\n"
+        "`/customrpl` — Đổi tên panel"
     ), inline=False)
     await inter.response.send_message(embed=e, ephemeral=True)
     asyncio.create_task(report(inter.user, inter.guild, inter.channel, "/help"))
 
-@bot.tree.command(name="addprefix", description="Đổi prefix lệnh cho server này (owner)")
-@app_commands.describe(prefix="Prefix mới (VD: t?, !, .)")
+# 🆕 /customrpl
+@bot.tree.command(name="customrpl", description="Đổi tên panel hiển thị (owner)")
+@app_commands.describe(name="Tên mới muốn hiển thị")
+async def slash_customrpl(inter: discord.Interaction, name: str):
+    if not await slash_owner_guard(inter): return
+    name = name.strip()
+    if not name or len(name) > 60:
+        await inter.response.send_message("❌ Tên phải từ 1-60 ký tự.", ephemeral=True); return
+    old = get_panel_name()
+    set_panel_name(name)
+    await inter.response.send_message(f"✅ Đã đổi tên panel:\n• Cũ: `{old}`\n• Mới: `{name}`", ephemeral=True)
+    try:
+        await bot.change_presence(
+            activity=discord.Activity(type=discord.ActivityType.watching, name=name),
+            status=discord.Status.dnd)
+    except Exception: pass
+    asyncio.create_task(report(inter.user, inter.guild, inter.channel,
+        f"/customrpl {name}", f"Panel name: `{old}` → `{name}`"))
+
+@bot.tree.command(name="addprefix", description="Đổi prefix server (owner)")
+@app_commands.describe(prefix="Prefix mới")
 async def slash_addprefix(inter: discord.Interaction, prefix: str):
     if not await slash_owner_guard(inter): return
     if inter.guild is None:
-        await inter.response.send_message("⚠️ Chỉ dùng trong server.", ephemeral=True); return
+        await inter.response.send_message("⚠️ Chỉ trong server.", ephemeral=True); return
     server_prefixes[str(inter.guild.id)] = prefix
     _save(PREFIX_FILE, server_prefixes)
-    await inter.response.send_message(f"✅ Đã đổi prefix thành `{prefix}` cho server này.", ephemeral=True)
-    asyncio.create_task(report(inter.user, inter.guild, inter.channel,
-                               f"/addprefix {prefix}", f"Prefix mới: `{prefix}`"))
+    await inter.response.send_message(f"✅ Đổi prefix thành `{prefix}`.", ephemeral=True)
 
-@bot.tree.command(name="adduser", description="Thêm user thường (owner)")
-@app_commands.describe(user="User cần thêm vào danh sách user")
+@bot.tree.command(name="adduser", description="Thêm user (owner)")
 async def slash_adduser(inter: discord.Interaction, user: discord.User):
     if not await slash_owner_guard(inter): return
     if user.id in extra_users:
-        await inter.response.send_message(f"ℹ️ {user.mention} đã có trong danh sách.", ephemeral=True); return
+        await inter.response.send_message(f"ℹ️ Đã có.", ephemeral=True); return
     if is_owner(user.id):
-        await inter.response.send_message(f"ℹ️ {user.mention} đã là owner.", ephemeral=True); return
-    extra_users.add(user.id)
-    _save(USERS_FILE, sorted(extra_users))
-    await inter.response.send_message(f"✅ Đã thêm {user.mention} vào **USER**.", ephemeral=True)
-    asyncio.create_task(report(inter.user, inter.guild, inter.channel,
-        f"/adduser {user.id}", f"Thêm user {user.mention}"))
+        await inter.response.send_message(f"ℹ️ Đã là owner.", ephemeral=True); return
+    extra_users.add(user.id); _save(USERS_FILE, sorted(extra_users))
+    await inter.response.send_message(f"✅ Thêm {user.mention} vào **USER**.", ephemeral=True)
 
 @bot.tree.command(name="addowner", description="Thêm owner (owner)")
-@app_commands.describe(user="User cần thêm vào danh sách owner")
 async def slash_addowner(inter: discord.Interaction, user: discord.User):
     if not await slash_owner_guard(inter): return
     if is_owner(user.id):
-        await inter.response.send_message(f"ℹ️ {user.mention} đã là owner.", ephemeral=True); return
-    extra_owners.add(user.id)
-    extra_users.discard(user.id)
-    _save(OWNERS_FILE, sorted(extra_owners))
-    _save(USERS_FILE, sorted(extra_users))
-    await inter.response.send_message(f"✅ Đã thêm {user.mention} vào **OWNER**.", ephemeral=True)
-    asyncio.create_task(report(inter.user, inter.guild, inter.channel,
-        f"/addowner {user.id}", f"Thêm owner {user.mention}"))
+        await inter.response.send_message(f"ℹ️ Đã là owner.", ephemeral=True); return
+    extra_owners.add(user.id); extra_users.discard(user.id)
+    _save(OWNERS_FILE, sorted(extra_owners)); _save(USERS_FILE, sorted(extra_users))
+    await inter.response.send_message(f"✅ Thêm {user.mention} vào **OWNER**.", ephemeral=True)
 
-class TreoRoomModal(discord.ui.Modal, title="🎙️ TREO ROOM — HARIDWG"):
-    f_token   = discord.ui.TextInput(
-        label="Token (1 hoặc nhiều, ngăn bởi dấu phẩy)",
-        style=discord.TextStyle.paragraph,
-        required=True, max_length=4000,
-        placeholder="MTIzNDU2... , OTg3NjU0..."
-    )
+class TreoRoomModal(discord.ui.Modal, title="🎙️ TREO ROOM"):
+    f_token   = discord.ui.TextInput(label="Token (1 hoặc nhiều, phẩy)", style=discord.TextStyle.paragraph,
+                                     required=True, max_length=4000)
     f_server  = discord.ui.TextInput(label="ID Server (Guild)", required=True, max_length=32)
     f_channel = discord.ui.TextInput(label="ID Kênh Voice",      required=True, max_length=32)
     f_mic     = discord.ui.TextInput(label="Mic (on/off)",       default="off", required=True, max_length=3)
@@ -1064,49 +962,61 @@ class TreoRoomModal(discord.ui.Modal, title="🎙️ TREO ROOM — HARIDWG"):
         deaf   = not (str(self.f_head.value).strip().lower() == "on")
         stream = str(self.f_stream.value).strip().lower() == "on"
         await interaction.response.send_message(
-            f"⏳ Đang treo **{len(tokens)}** token vào guild `{gid}` / kênh `{cid}`...",
-            ephemeral=True)
+            f"⏳ Đang treo **{len(tokens)}** token vào `{cid}`...", ephemeral=True)
         await start_treo_room(tokens, gid, cid, mute, deaf, stream,
-                              lambda msg: interaction.followup.send(msg, ephemeral=True))
-        asyncio.create_task(report(
-            interaction.user, interaction.guild, interaction.channel, "/treoroom",
-            f"Tokens: `{len(tokens)}` | Server: `{gid}` | Channel: `{cid}` | "
-            f"Mic: `{mute}` | Tai nghe: `{not deaf}` | Stream: `{stream}`"))
+                              lambda m: interaction.followup.send(m, ephemeral=True))
+        asyncio.create_task(report(interaction.user, interaction.guild, interaction.channel,
+            "/treoroom", f"Tokens: `{len(tokens)}` | Server: `{gid}` | Channel: `{cid}`"))
 
 @bot.tree.command(name="treoroom", description="Mở form treo token vào voice")
 async def slash_treoroom(inter: discord.Interaction):
     if not await slash_user_guard(inter): return
     if inter.guild is not None:
         try:
-            await inter.user.send(
-                f"⚠️ Vì lý do bảo mật, hãy dùng `/treoroom` trong **DM với bot**.")
+            await inter.user.send("⚠️ Vì bảo mật, hãy dùng `/treoroom` trong **DM với bot**.")
         except Exception: pass
     await inter.response.send_modal(TreoRoomModal())
 
-@bot.tree.command(name="dungtreoall", description="Dừng treo TẤT CẢ token (owner)")
+# 🆕 /dungtreo (alias /dungtreoall) — FIX hoạt động đúng
+@bot.tree.command(name="dungtreo", description="Dừng TẤT CẢ: voice + spam + treongon (owner)")
+async def slash_dungtreo(inter: discord.Interaction):
+    if not await slash_owner_guard(inter): return
+    r = stop_all_activity()
+    await inter.response.send_message(
+        f"🛑 **Đã dừng tất cả:**\n"
+        f"• Voice workers: **{r['voice']}**\n"
+        f"• Task spam/treongon: **{r['tasks']}**",
+        ephemeral=True)
+    log.info(f"[DUNGTREO] voice={r['voice']} tasks={r['tasks']}")
+    asyncio.create_task(report(inter.user, inter.guild, inter.channel,
+        "/dungtreo", f"Voice: {r['voice']} | Tasks: {r['tasks']}"))
+
+@bot.tree.command(name="dungtreoall", description="Alias của /dungtreo (owner)")
 async def slash_dungtreoall(inter: discord.Interaction):
     if not await slash_owner_guard(inter): return
-    n = stop_all_treo()
-    await inter.response.send_message(f"🛑 Đã dừng **{n}** token đang treo.", ephemeral=True)
-    asyncio.create_task(report(inter.user, inter.guild, inter.channel, "/dungtreoall", f"Đã dừng {n} token"))
+    r = stop_all_activity()
+    await inter.response.send_message(
+        f"🛑 Đã dừng **{r['voice']}** voice + **{r['tasks']}** task.", ephemeral=True)
 
-# ══════════════════════════════════════════════════════════════
-#  [USER] /treongon — Nhắn nội dung từ file/text (SLASH)
-# ══════════════════════════════════════════════════════════════
-@bot.tree.command(name="treongon", description="Nhắn nội dung từ file ngonnhay* hoặc text tự viết")
+# 🆕 /treongon — syntax mới: delay + channel_id + server_id + tokens + file/nguon
+@bot.tree.command(name="treongon", description="Nhắn nội dung từ file ngontreo* hoặc text (user)")
 @app_commands.describe(
+    delay="Delay giây giữa các tin (tối thiểu 3)",
     channel_id="ID kênh cần nhắn",
+    server_id="ID server (guild)",
     tokens="1 hoặc nhiều token, ngăn bởi dấu phẩy",
     so_lan="Số lần lặp lại (0 = vô hạn, mặc định 1)",
-    delay="Delay giây giữa các tin (tối thiểu 3, để trống = 3)",
-    nguon="Chọn file 'ngonnhay*' hoặc gõ nội dung tự viết (nhiều câu → cách nhau bằng | )",
+    file="Upload file (nếu không dùng file có sẵn)",
+    nguon="Chọn file 'ngontreo*' / 'ngonnhay*' có sẵn (autocomplete)",
 )
 @app_commands.autocomplete(nguon=ngon_autocomplete)
 async def slash_treongon(inter: discord.Interaction,
+                         delay: float,
                          channel_id: str,
+                         server_id: str,
                          tokens: str,
                          so_lan: int = 1,
-                         delay: float = 3.0,
+                         file: Optional[discord.Attachment] = None,
                          nguon: Optional[str] = None):
     if not await slash_user_guard(inter): return
 
@@ -1116,99 +1026,165 @@ async def slash_treongon(inter: discord.Interaction,
 
     try: cid = int(channel_id)
     except ValueError:
-        await inter.response.send_message("❌ ID kênh không hợp lệ.", ephemeral=True); return
+        await inter.response.send_message("❌ `channel_id` không hợp lệ.", ephemeral=True); return
 
-    if delay is None or delay < 3.0:
-        delay = 3.0
-    if so_lan is None:
-        so_lan = 1
+    try: sid = int(server_id)
+    except ValueError:
+        await inter.response.send_message("❌ `server_id` không hợp lệ.", ephemeral=True); return
 
-    lines = parse_ngon_source(nguon or "")
+    if delay is None or delay < 3.0: delay = 3.0
+    if so_lan is None: so_lan = 1
+
+    # Ưu tiên: upload > chọn file > fallback
+    lines: List[str] = []
     used_from = ""
-    if lines:
-        p = Path(nguon)
-        if p.exists() and p.is_file():
-            used_from = f"file `{p.name}`"
-        else:
-            for ext in (".txt", ".md", ".ngon"):
-                if Path(nguon + ext).exists():
-                    used_from = f"file `{nguon}{ext}`"
-                    break
-        if not used_from:
-            used_from = "text tự viết"
 
-    if not lines:
+    if file is not None:
+        # Lưu vào thư mục với prefix ngontreo_
+        fname = file.filename
+        if not any(fname.lower().startswith(p) for p in NGON_PREFIXES):
+            fname = f"ngontreo_{int(time.time())}_{fname}"
+        save_path = Path(fname)
+        try:
+            await file.save(save_path)
+            lines = read_ngon_file(save_path)
+            used_from = f"file upload `{save_path.name}`"
+        except Exception as e:
+            await inter.response.send_message(f"❌ Không lưu được file: {e}", ephemeral=True); return
+    elif nguon:
+        lines = parse_ngon_source(nguon)
+        used_from = f"file có sẵn `{nguon}`"
+    else:
         lines = read_messages()
-        if lines:
-            used_from = f"file mặc định `{MSG_FILE}`"
+        if lines: used_from = f"file mặc định `{MSG_FILE}`"
 
     if not lines:
         await inter.response.send_message(
             "❌ Không có nội dung nào để gửi.\n"
-            "• Chọn file `ngonnhay*` từ autocomplete\n"
-            "• Hoặc gõ nội dung trực tiếp (nhiều câu → cách nhau bằng `|`)\n"
-            f"• Hoặc tạo file `{MSG_FILE}` mặc định",
-            ephemeral=True)
+            "• Chọn file `ngontreo*` ở ô **nguon**\n"
+            "• Hoặc upload file ở ô **file**\n"
+            "• Hoặc tạo file `noidung.txt`", ephemeral=True)
         return
 
-    stop = asyncio.Event()
-    spam_stop_flags[cid] = stop
+    stop = register_stop()
 
     async def _token_loop(tok):
         for _ in range(so_lan if so_lan > 0 else 10**9):
             if stop.is_set(): return
             for line in lines:
                 if stop.is_set(): return
-                ok = await send_token_message(tok, cid, line)
-                if not ok:
-                    await asyncio.sleep(2)
-                else:
-                    await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.1, 0.1)))
+                ok = await send_token_message(tok, cid, sanitize(line))
+                if not ok: await asyncio.sleep(2)
+                else:      await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.1, 0.1)))
 
     async def run_all():
         tasks = [asyncio.create_task(_token_loop(tok)) for tok in tok_list]
-        try:
-            await asyncio.gather(*tasks)
-        except Exception as e:
-            log.error(f"treongon: {e}")
-        finally:
-            spam_stop_flags.pop(cid, None)
+        try: await asyncio.gather(*tasks)
+        except Exception as e: log.error(f"treongon: {e}")
+        finally: unregister_stop(stop)
 
     asyncio.create_task(run_all())
 
-    preview = " | ".join(lines[:3])[:150] + (" ..." if len(lines) > 3 else "")
+    preview = " | ".join(lines[:3])[:120] + (" ..." if len(lines) > 3 else "")
     await inter.response.send_message(
-        f"🚀 **/treongon** — kênh `{cid}`\n"
-        f"• Tokens: `{len(tok_list)}`\n"
-        f"• Lặp: `{so_lan if so_lan > 0 else '∞'}` lần\n"
-        f"• Delay: `{delay}s`\n"
+        f"🚀 **/treongon**\n"
+        f"• Server: `{sid}` | Kênh: `{cid}`\n"
+        f"• Tokens: `{len(tok_list)}` | Lặp: `{so_lan if so_lan>0 else '∞'}` | Delay: `{delay}s`\n"
         f"• Nguồn: {used_from} ({len(lines)} câu)\n"
         f"• Preview: {preview}",
         ephemeral=True)
+    asyncio.create_task(report(inter.user, inter.guild, inter.channel, "/treongon",
+        f"Server: `{sid}` | Channel: `{cid}` | Tokens: `{len(tok_list)}` | Loops: `{so_lan}` | "
+        f"Delay: `{delay}s` | Nguồn: {used_from}"))
 
-    asyncio.create_task(report(
-        inter.user, inter.guild, inter.channel, "/treongon",
-        f"Channel: `{cid}` | Tokens: `{len(tok_list)}` | Loops: `{so_lan}` | "
-        f"Delay: `{delay}s` | Nguồn: {used_from} | Câu: `{len(lines)}`"))
+# 🆕 /spam — gửi nội dung giữ nguyên định dạng, dùng admin bot
+@bot.tree.command(name="spam", description="Spam nội dung (giữ nguyên emoji, xuống dòng, dấu)")
+@app_commands.describe(
+    channel_id="ID kênh cần spam",
+    server_id="ID server (guild)",
+    delay="Delay giây (tối thiểu 3)",
+    content="Nội dung (giữ nguyên mọi ký tự: emoji, xuống dòng, dấu tiếng Việt...)",
+    so_lan="Số lần gửi (mặc định 1, 0 = vô hạn)",
+)
+async def slash_spam(inter: discord.Interaction,
+                     channel_id: str,
+                     server_id: str,
+                     delay: float,
+                     content: str,
+                     so_lan: int = 1):
+    if not await slash_user_guard(inter): return
 
-@bot.tree.command(name="leave", description="Bot rời khỏi server này (owner)")
+    try: cid = int(channel_id)
+    except ValueError:
+        await inter.response.send_message("❌ `channel_id` không hợp lệ.", ephemeral=True); return
+    try: sid = int(server_id)
+    except ValueError:
+        await inter.response.send_message("❌ `server_id` không hợp lệ.", ephemeral=True); return
+
+    if delay is None or delay < 3.0: delay = 3.0
+    if so_lan is None: so_lan = 1
+
+    # Lấy channel qua admin bot
+    target_channel = bot.get_channel(cid)
+    if target_channel is None:
+        try: target_channel = await bot.fetch_channel(cid)
+        except Exception as e:
+            await inter.response.send_message(f"❌ Không tìm thấy kênh: {e}", ephemeral=True); return
+
+    # Sanitize nhưng GIỮ NGUYÊN nội dung
+    msg_content = sanitize(content, 2000)
+
+    stop = register_stop()
+
+    async def spam_loop():
+        sent = 0
+        try:
+            while not stop.is_set():
+                if so_lan > 0 and sent >= so_lan: break
+                try:
+                    await target_channel.send(msg_content)
+                    sent += 1
+                except discord.HTTPException as e:
+                    log.warning(f"spam send error: {e}")
+                    await asyncio.sleep(2)
+                if stop.is_set(): break
+                await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.1, 0.1)))
+        except Exception as e:
+            log.error(f"spam loop: {e}")
+        finally:
+            unregister_stop(stop)
+
+    asyncio.create_task(spam_loop())
+
+    preview = msg_content[:100].replace("\n", "\\n")
+    await inter.response.send_message(
+        f"🚀 **/spam**\n"
+        f"• Server: `{sid}` | Kênh: `{cid}`\n"
+        f"• Delay: `{delay}s` | Lần: `{so_lan if so_lan>0 else '∞'}`\n"
+        f"• Preview: `{preview}{'...' if len(msg_content)>100 else ''}`",
+        ephemeral=True)
+    asyncio.create_task(report(inter.user, inter.guild, inter.channel, "/spam",
+        f"Server: `{sid}` | Channel: `{cid}` | Delay: `{delay}s` | Loops: `{so_lan}` | "
+        f"Content: `{msg_content[:200]}`"))
+
+@bot.tree.command(name="leave", description="Bot rời server (owner)")
 async def slash_leave(inter: discord.Interaction):
     if not await slash_owner_guard(inter): return
     if inter.guild is None:
-        await inter.response.send_message("⚠️ Chỉ dùng trong server.", ephemeral=True); return
+        await inter.response.send_message("⚠️ Chỉ trong server.", ephemeral=True); return
     name, gid = inter.guild.name, inter.guild.id
-    await inter.response.send_message(f"👋 Đang rời `{name}`...", ephemeral=True)
-    asyncio.create_task(report(inter.user, inter.guild, inter.channel, "/leave", f"Rời guild `{gid}`"))
+    await inter.response.send_message(f"👋 Rời `{name}`...", ephemeral=True)
+    asyncio.create_task(report(inter.user, inter.guild, inter.channel, "/leave", f"Rời `{gid}`"))
     try: await inter.guild.leave()
     except Exception as e: log.error(f"leave: {e}")
 
-@bot.tree.command(name="xa", description="Phát file nhạc trong voice")
+@bot.tree.command(name="xa", description="Phát nhạc trong voice (user)")
 @app_commands.describe(
-    tokens="1 hoặc nhiều token, ngăn bởi dấu phẩy",
+    tokens="1 hoặc nhiều token",
     channel_id="ID kênh voice",
     user="User nhận thông báo",
-    file="File nhạc (upload)",
-    so_thu_tu="Số thứ tự file trong thư mục Xả",
+    file="Upload file nhạc",
+    so_thu_tu="Số thứ tự file trong Xả/",
 )
 async def slash_xa(inter: discord.Interaction, tokens: str, channel_id: str,
                    user: discord.User,
@@ -1228,16 +1204,15 @@ async def slash_xa(inter: discord.Interaction, tokens: str, channel_id: str,
         target_path = XA_DIR / file.filename
         try: await file.save(target_path)
         except Exception as e:
-            await inter.response.send_message(f"❌ Không lưu được file: {e}", ephemeral=True); return
+            await inter.response.send_message(f"❌ Lưu file lỗi: {e}", ephemeral=True); return
     elif so_thu_tu is not None:
         for ext in (".mp3", ".wav", ".ogg", ".m4a"):
             c = XA_DIR / f"{so_thu_tu}{ext}"
             if c.exists(): target_path = c; break
         if target_path is None:
-            await inter.response.send_message(
-                f"❌ Không tìm thấy file `{so_thu_tu}` trong `Xả/`.", ephemeral=True); return
+            await inter.response.send_message(f"❌ Không có file `{so_thu_tu}` trong `Xả/`.", ephemeral=True); return
     else:
-        await inter.response.send_message("❌ Cần upload file hoặc nhập `so_thu_tu`.", ephemeral=True); return
+        await inter.response.send_message("❌ Cần upload hoặc `so_thu_tu`.", ephemeral=True); return
 
     try:
         with open("xa_config.json", "w", encoding="utf-8") as f:
@@ -1254,11 +1229,9 @@ async def slash_xa(inter: discord.Interaction, tokens: str, channel_id: str,
         started += 1
         await asyncio.sleep(0.4)
 
-    await inter.response.send_message(
-        f"🎶 Đã treo **{started}** token vào kênh `{cid}` với file `{target_path.name}`.",
-        ephemeral=True)
+    await inter.response.send_message(f"🎶 Đã treo **{started}** token vào `{cid}` với `{target_path.name}`.", ephemeral=True)
     asyncio.create_task(report(inter.user, inter.guild, inter.channel, "/xa",
-        f"Tokens: `{len(tok_list)}` | Channel: `{cid}` | User: <@{user.id}> | File: `{target_path.name}`"))
+        f"Tokens: `{len(tok_list)}` | Channel: `{cid}` | File: `{target_path.name}`"))
 
 # ══════════════════════════════════════════════════════════════
 #  WEB SERVER + WEBSOCKET
@@ -1268,32 +1241,24 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>HARIDWG PANEL — Status</title>
+<title>{{PANEL_NAME}} — Status</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
-  body{
-    background:#0a0a0a;color:#fff;font-family:'Consolas','Monaco',monospace;
-    min-height:100vh;display:flex;flex-direction:column;align-items:center;
-    padding:40px 20px;
-    background-image:radial-gradient(circle at 50% 0%,rgba(255,0,0,.18),transparent 60%);
-  }
+  body{background:#0a0a0a;color:#fff;font-family:'Consolas','Monaco',monospace;
+    min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 20px;
+    background-image:radial-gradient(circle at 50% 0%,rgba(255,0,0,.18),transparent 60%);}
   .mask{font-size:70px;margin-bottom:12px;filter:drop-shadow(0 0 25px rgba(255,0,0,.6));animation:float 3s ease-in-out infinite}
   @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
-  .header{font-size:30px;color:#ff0000;text-shadow:0 0 12px #ff0000;letter-spacing:5px;margin-bottom:6px}
+  .header{font-size:30px;color:#ff0000;text-shadow:0 0 12px #ff0000;letter-spacing:5px;margin-bottom:6px;text-align:center}
   .subtitle{color:#888;font-size:11px;margin-bottom:35px;letter-spacing:3px}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:20px;width:100%;max-width:960px}
-  .card{
-    background:linear-gradient(145deg,#1a0000,#0d0000);
-    border:1px solid #ff0000;border-radius:12px;padding:24px;
-    box-shadow:0 0 25px rgba(255,0,0,.2);position:relative;overflow:hidden;
-    transition:transform .2s,box-shadow .2s;
-  }
+  .card{background:linear-gradient(145deg,#1a0000,#0d0000);border:1px solid #ff0000;border-radius:12px;padding:24px;
+    box-shadow:0 0 25px rgba(255,0,0,.2);position:relative;overflow:hidden;transition:transform .2s,box-shadow .2s}
   .card:hover{transform:translateY(-4px);box-shadow:0 0 35px rgba(255,0,0,.4)}
   .card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;
     background:linear-gradient(90deg,#ff0000,#ff5555,#ff0000)}
   .card-label{font-size:11px;color:#ff5555;text-transform:uppercase;letter-spacing:3px;margin-bottom:14px}
-  .card-value{font-size:34px;font-weight:bold;color:#fff;text-shadow:0 0 10px rgba(255,0,0,.6);
-    display:flex;align-items:center;gap:10px}
+  .card-value{font-size:34px;font-weight:bold;color:#fff;text-shadow:0 0 10px rgba(255,0,0,.6);display:flex;align-items:center;gap:10px}
   .card-sub{font-size:11px;color:#666;margin-top:10px;letter-spacing:1px}
   .status-online{color:#00ff88!important;text-shadow:0 0 15px #00ff88!important;font-size:26px!important}
   .status-offline{color:#ff0000!important;text-shadow:0 0 15px #ff0000!important;font-size:26px!important}
@@ -1303,8 +1268,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
   .footer{margin-top:40px;color:#333;font-size:10px;letter-spacing:3px;text-align:center}
   .footer a{color:#ff0000;text-decoration:none}
-  .ws-status{position:fixed;top:14px;right:14px;font-size:10px;color:#555;
-    padding:6px 12px;border:1px solid #333;border-radius:20px;background:#000;letter-spacing:1px}
+  .ws-status{position:fixed;top:14px;right:14px;font-size:10px;color:#555;padding:6px 12px;border:1px solid #333;border-radius:20px;background:#000;letter-spacing:1px}
   .ws-status.on{color:#00ff88;border-color:#00ff88}
   .ws-status.off{color:#ff0000;border-color:#ff0000}
   .glow{animation:glow 2s infinite}
@@ -1314,96 +1278,56 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <body>
 <div class="ws-status off" id="wsStat">● WS: KẾT NỐI...</div>
 <div class="mask glow">🎭</div>
-<div class="header">HARIDWG PANEL</div>
+<div class="header">{{PANEL_NAME}}</div>
 <div class="subtitle">● REALTIME MONITORING ●</div>
 <div class="grid">
-  <div class="card">
-    <div class="card-label">Trạng thái Bot</div>
+  <div class="card"><div class="card-label">Trạng thái Bot</div>
     <div class="card-value"><span class="dot offline" id="dot"></span>
       <span class="status-offline" id="status-text">Đang tải...</span></div>
-    <div class="card-sub" id="bot-info">—</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Số Server Bot Ở</div>
-    <div class="card-value" id="guilds">—</div>
-    <div class="card-sub">guild</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Số Câu Lệnh</div>
-    <div class="card-value" id="cmds">—</div>
-    <div class="card-sub" id="cmd-sub">slash + prefix</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Voice Đang Treo</div>
-    <div class="card-value" id="voice">—</div>
-    <div class="card-sub">worker</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Ping (Latency)</div>
-    <div class="card-value" id="ping">—</div>
-    <div class="card-sub">ms</div>
-  </div>
-  <div class="card">
-    <div class="card-label">Uptime</div>
-    <div class="card-value" id="uptime">—</div>
-    <div class="card-sub">kể từ khởi động</div>
-  </div>
+    <div class="card-sub" id="bot-info">—</div></div>
+  <div class="card"><div class="card-label">Số Server Bot Ở</div>
+    <div class="card-value" id="guilds">—</div><div class="card-sub">guild</div></div>
+  <div class="card"><div class="card-label">Số Câu Lệnh</div>
+    <div class="card-value" id="cmds">—</div><div class="card-sub" id="cmd-sub">slash + prefix</div></div>
+  <div class="card"><div class="card-label">Voice Đang Treo</div>
+    <div class="card-value" id="voice">—</div><div class="card-sub">worker</div></div>
+  <div class="card"><div class="card-label">Task Đang Chạy</div>
+    <div class="card-value" id="tasks">—</div><div class="card-sub">spam / treongon</div></div>
+  <div class="card"><div class="card-label">Uptime</div>
+    <div class="card-value" id="uptime">—</div><div class="card-sub">kể từ khởi động</div></div>
 </div>
-<div class="footer">HARIDWG PANEL • v3.5 • WebSocket Realtime<br>
+<div class="footer">{{PANEL_NAME}} • v4.0 • WebSocket Realtime<br>
 <a href="/api/status">/api/status</a> • <a href="/health">/health</a> • /ws</div>
 <script>
-let ws, reconnectTimer;
-function fmtUptime(sec){
-  sec=Math.floor(sec);
-  const d=Math.floor(sec/86400),h=Math.floor((sec%86400)/3600);
-  const m=Math.floor((sec%3600)/60),s=sec%60;
-  if(d>0)return d+'d '+h+'h '+m+'m';
-  if(h>0)return h+'h '+m+'m';
-  if(m>0)return m+'m '+s+'s';
-  return s+'s';
-}
-function updateUI(d){
-  const on = d.bot_status==='ONLINE';
+let ws, rt;
+function fmtUp(s){s=Math.floor(s);const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),
+  m=Math.floor((s%3600)/60),x=s%60;if(d)return d+'d '+h+'h '+m+'m';if(h)return h+'h '+m+'m';
+  if(m)return m+'m '+x+'s';return x+'s';}
+function ui(d){const on=d.bot_status==='ONLINE';
   document.getElementById('dot').className='dot '+(on?'online':'offline');
   const st=document.getElementById('status-text');
-  st.textContent = on?'ONLINE':'OFFLINE';
-  st.className = on?'status-online':'status-offline';
-  document.getElementById('bot-info').textContent = d.bot_name+' • ID '+(d.bot_id||'—');
-  document.getElementById('guilds').textContent = d.guild_count;
-  document.getElementById('cmds').textContent = d.slash_count+d.prefix_count;
-  document.getElementById('cmd-sub').textContent = d.slash_count+' slash + '+d.prefix_count+' prefix';
-  document.getElementById('voice').textContent = d.voice_workers;
-  document.getElementById('ping').textContent = d.latency_ms||'—';
-  document.getElementById('uptime').textContent = fmtUptime(d.uptime);
-}
-function setWsState(state){
-  const el=document.getElementById('wsStat');
-  el.className='ws-status '+(state==='on'?'on':'off');
-  el.textContent = state==='on'?'● WS: ONLINE':'● WS: RECONNECT...';
-}
-function connectWS(){
-  const proto = location.protocol==='https:'?'wss':'ws';
-  const secret = new URLSearchParams(location.search).get('secret')||'';
-  ws = new WebSocket(proto+'://'+location.host+'/ws?secret='+encodeURIComponent(secret));
-  ws.onopen = ()=>{setWsState('on');console.log('[WS] connected')};
-  ws.onmessage = (ev)=>{
-    try{
-      const m=JSON.parse(ev.data);
-      if(m.type==='status') updateUI(m.data);
-    }catch(e){}
-  };
-  ws.onclose = ()=>{
-    setWsState('off');
-    clearTimeout(reconnectTimer);
-    reconnectTimer=setTimeout(connectWS,5000);
-  };
-  ws.onerror = ()=>setWsState('off');
-}
-connectWS();
-setInterval(async()=>{
-  if(ws && ws.readyState===WebSocket.OPEN) return;
-  try{const r=await fetch('/api/status');updateUI(await r.json());}catch(e){}
-},10000);
+  st.textContent=on?'ONLINE':'OFFLINE';
+  st.className=on?'status-online':'status-offline';
+  document.getElementById('bot-info').textContent=d.bot_name+' • ID '+(d.bot_id||'—');
+  document.getElementById('guilds').textContent=d.guild_count;
+  document.getElementById('cmds').textContent=d.slash_count+d.prefix_count;
+  document.getElementById('cmd-sub').textContent=d.slash_count+' slash + '+d.prefix_count+' prefix';
+  document.getElementById('voice').textContent=d.voice_workers;
+  document.getElementById('tasks').textContent=d.active_tasks||0;
+  document.getElementById('uptime').textContent=fmtUp(d.uptime);}
+function setWs(s){const el=document.getElementById('wsStat');
+  el.className='ws-status '+(s==='on'?'on':'off');
+  el.textContent=s==='on'?'● WS: ONLINE':'● WS: RECONNECT...';}
+function conn(){const p=location.protocol==='https:'?'wss':'ws';
+  const sec=new URLSearchParams(location.search).get('secret')||'';
+  ws=new WebSocket(p+'://'+location.host+'/ws?secret='+encodeURIComponent(sec));
+  ws.onopen=()=>setWs('on');
+  ws.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.type==='status')ui(m.data);}catch(_){}};
+  ws.onclose=()=>{setWs('off');clearTimeout(rt);rt=setTimeout(conn,5000);};
+  ws.onerror=()=>setWs('off');}
+conn();
+setInterval(async()=>{if(ws&&ws.readyState===WebSocket.OPEN)return;
+  try{const r=await fetch('/api/status');ui(await r.json());}catch(_){}},10000);
 </script>
 </body>
 </html>
@@ -1412,6 +1336,7 @@ setInterval(async()=>{
 def get_status_dict() -> dict:
     online = bot.is_ready() and bot.user is not None
     return {
+        "panel_name": get_panel_name(),
         "bot_status": "ONLINE" if online else "OFFLINE",
         "bot_name": str(bot.user) if bot.user else "—",
         "bot_id": bot.user.id if bot.user else 0,
@@ -1420,11 +1345,13 @@ def get_status_dict() -> dict:
         "slash_count": len(bot.tree.get_commands()),
         "prefix_count": len([c for c in bot.commands]),
         "voice_workers": len(active_voice_workers),
+        "active_tasks": len(_active_stop_events),
         "uptime": time.time() - BOT_START_TIME,
     }
 
 async def handle_index(request):
-    return aioweb.Response(text=HTML_PAGE, content_type="text/html")
+    html = HTML_PAGE.replace("{{PANEL_NAME}}", get_panel_name())
+    return aioweb.Response(text=html, content_type="text/html")
 
 async def handle_health(request):
     return aioweb.json_response({"ok": True, "status": "running"})
@@ -1438,8 +1365,7 @@ async def handle_ws(request):
     secret = request.query.get("secret", "")
     if secret != WS_SECRET:
         await ws.send_json({"type": "error", "message": "Invalid secret"})
-        await ws.close()
-        return ws
+        await ws.close(); return ws
     connected_ws_clients.add(ws)
     log.info(f"[WS] +client (tổng: {len(connected_ws_clients)})")
     await ws.send_json({"type": "status", "data": get_status_dict()})
@@ -1453,8 +1379,6 @@ async def handle_ws(request):
                     await ws.send_json({"type": "error", "message": "JSON không hợp lệ"})
                 except Exception as e:
                     await ws.send_json({"type": "error", "message": str(e)})
-            elif msg.type == aioweb.WSMsgType.ERROR:
-                log.warning(f"[WS] error: {ws.exception()}")
     finally:
         connected_ws_clients.discard(ws)
         log.info(f"[WS] -client (còn: {len(connected_ws_clients)})")
@@ -1467,48 +1391,45 @@ async def handle_ws_command(ws, data: dict):
     if action == "treo":
         tokens = parse_tokens(data.get("tokens", ""))
         if not tokens:
-            await ws.send_json({"type": "error", "message": "Không có token hợp lệ"}); return
+            await ws.send_json({"type": "error", "message": "Không có token"}); return
         try:
             gid = int(data.get("guild_id")); cid = int(data.get("channel_id"))
         except (TypeError, ValueError):
-            await ws.send_json({"type": "error", "message": "guild_id / channel_id không hợp lệ"}); return
-        mute   = bool(data.get("mute", False))
-        deaf   = bool(data.get("deaf", True))
-        stream = bool(data.get("stream", False))
-        async def _reply(msg):
-            try: await ws.send_json({"type": "info", "message": msg})
+            await ws.send_json({"type": "error", "message": "ID không hợp lệ"}); return
+        mute = bool(data.get("mute", False)); deaf = bool(data.get("deaf", True)); stream = bool(data.get("stream", False))
+        async def _reply(m):
+            try: await ws.send_json({"type": "info", "message": m})
             except Exception: pass
         asyncio.create_task(start_treo_room(tokens, gid, cid, mute, deaf, stream, _reply))
-        await ws.send_json({"type": "ok", "message": f"Đang khởi động treo {len(tokens)} token..."})
-        log.info(f"[WS] treo room: {len(tokens)} token | guild={gid} | channel={cid}"); return
-    if action == "stop_all":
-        n = stop_all_treo()
-        await ws.send_json({"type": "ok", "message": f"Đã dừng {n} worker"})
-        log.info(f"[WS] stop_all: {n} worker"); return
+        await ws.send_json({"type": "ok", "message": f"Treo {len(tokens)} token..."}); return
+    if action in ("stop_all", "dungtreo"):
+        r = stop_all_activity()
+        await ws.send_json({"type": "ok", "message": f"Đã dừng voice={r['voice']} task={r['tasks']}"}); return
     if action == "spam":
         tokens = parse_tokens(data.get("tokens", ""))
         if not tokens:
-            await ws.send_json({"type": "error", "message": "Không có token hợp lệ"}); return
+            await ws.send_json({"type": "error", "message": "Không có token"}); return
         try: cid = int(data.get("channel_id"))
         except (TypeError, ValueError):
             await ws.send_json({"type": "error", "message": "channel_id không hợp lệ"}); return
-        content = str(data.get("content", "")).strip()
-        count   = int(data.get("count", 1))
-        delay   = float(data.get("delay", 3.0))
-        if not content:
+        content = str(data.get("content", ""))
+        count = int(data.get("count", 1)); delay = float(data.get("delay", 3.0))
+        if not content.strip():
             await ws.send_json({"type": "error", "message": "Nội dung rỗng"}); return
-        stop_evt = asyncio.Event()
+        msg_content = sanitize(content)
+        stop_evt = register_stop()
         async def run_one(tok):
             sent = 0
             while not stop_evt.is_set():
                 if count > 0 and sent >= count: return
-                await send_token_message(tok, cid, content)
+                await send_token_message(tok, cid, msg_content)
                 sent += 1
                 await asyncio.sleep(max(0.5, delay + delay*random.uniform(-0.15, 0.15)))
-        for tok in tokens:
-            asyncio.create_task(run_one(tok))
-        await ws.send_json({"type": "ok", "message": f"Đang spam {cid} với {len(tokens)} token"})
-        log.info(f"[WS] spam: {len(tokens)} token | channel={cid} | count={count}"); return
+        async def run_all():
+            try: await asyncio.gather(*[asyncio.create_task(run_one(t)) for t in tokens])
+            finally: unregister_stop(stop_evt)
+        asyncio.create_task(run_all())
+        await ws.send_json({"type": "ok", "message": f"Spam {cid} với {len(tokens)} token"}); return
     await ws.send_json({"type": "error", "message": f"Action không hỗ trợ: {action}"})
 
 async def broadcast_status_loop():
@@ -1528,15 +1449,12 @@ async def start_web_server():
     app.router.add_get("/health",      handle_health)
     app.router.add_get("/api/status",  handle_status)
     app.router.add_get("/ws",          handle_ws)
-    runner = aioweb.AppRunner(app)
-    await runner.setup()
-    site = aioweb.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
+    runner = aioweb.AppRunner(app); await runner.setup()
+    site = aioweb.TCPSite(runner, "0.0.0.0", PORT); await site.start()
     log.info(f"🌐 Web Server: http://0.0.0.0:{PORT}")
     log.info(f"🔌 WebSocket : ws://0.0.0.0:{PORT}/ws?secret=***")
     asyncio.create_task(broadcast_status_loop())
-    while True:
-        await asyncio.sleep(3600)
+    while True: await asyncio.sleep(3600)
 
 # ══════════════════════════════════════════════════════════════
 #  READY
@@ -1547,15 +1465,14 @@ async def on_ready():
     try:
         synced = await bot.tree.sync()
         print(f"{Fore.CYAN}[{OWNER_NAME.upper()}] ✅ Synced {len(synced)} slash commands{Style.RESET_ALL}")
-    except Exception as e:
-        log.error(f"sync: {e}")
+    except Exception as e: log.error(f"sync: {e}")
     try:
         await bot.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.watching, name=f"{OWNER_NAME} PANEL"),
+            activity=discord.Activity(type=discord.ActivityType.watching, name=get_panel_name()),
             status=discord.Status.dnd)
     except Exception: pass
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
-    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🎭 Bot sẵn sàng — owner: {OWNER_NAME}{Style.RESET_ALL}")
+    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🎭 Panel: {get_panel_name()}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👑 Owner gốc: {sorted(DEFAULT_OWNER_IDS)}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👑 Owner thêm: {sorted(extra_owners) or '—'}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👤 User thêm : {sorted(extra_users) or '—'}{Style.RESET_ALL}")
@@ -1567,24 +1484,21 @@ async def on_ready():
 #  RUN
 # ══════════════════════════════════════════════════════════════
 async def _run_all():
-    await asyncio.gather(
-        start_web_server(),
-        bot.start(BOT_TOKEN),
-    )
+    await asyncio.gather(start_web_server(), bot.start(BOT_TOKEN))
 
 if __name__ == "__main__":
     if not BOT_TOKEN:
         raise SystemExit("❌ Thiếu DISCORD_TOKEN trong .env")
     if not LOG_WEBHOOK_URL:
-        print("⚠️ Chưa cấu hình LOG_WEBHOOK_URL — sẽ không gửi log.")
+        print("⚠️ Chưa cấu hình LOG_WEBHOOK_URL.")
 
     if os.name == "nt":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     clear_console()
-    print_banner(OWNER_NAME)
+    print_banner(get_panel_name(), OWNER_NAME)
     XA_DIR.mkdir(exist_ok=True)
-    ensure_ngon_files()          # 👈 Tự tạo ngonnhay_1.txt → ngonnhay_6.txt
+    ensure_ngon_files()   # 👈 Tự tạo ngontreo_1→4 + ngonnhay_1→6
 
     try:
         asyncio.run(_run_all())
