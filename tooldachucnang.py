@@ -1,7 +1,7 @@
-# main.py — HARIDWG PANEL v4.4
+# main.py — HARIDWG PANEL v4.5
 # Bot Discord + Web Dashboard + WebSocket + Anti-DDoS
-# Đọc TẤT CẢ file trong thư mục NGÔN/ (không lọc tên)
-# /treongon tag user ở CUỐI mỗi dòng
+# Dashboard rút gọn 3 mục + Lệnh /custrangthai đổi trạng thái bot
+# File ngôn trong NGÔN/ — tag user ở CUỐI dòng
 import os, json, asyncio, random, time, aiohttp, base64, re, unicodedata, logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -92,7 +92,7 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
 
     print()
     print(f"{CYAN}          ╔═══════════════════════════════════════════════════╗{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.4  🎭          {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.5  🎭          {CYAN}║{RESET}")
     print(f"{CYAN}          ║{WHITE}       Owner: {DARK_RED}{owner_name}{WHITE} — Multitool Discord     {CYAN}║{RESET}")
     print(f"{CYAN}          ║{WHITE}       🛡️  ANTI-DDOS + NGÔN/ + TAG CUỐI  🛡️     {CYAN}║{RESET}")
     print(f"{CYAN}          ╚═══════════════════════════════════════════════════╝{RESET}")
@@ -103,8 +103,8 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
     print(f"{BLOOD}  [•] Chống DDoS     : {WHITE}3 LỚP (Cloudflare + RateLimit + Auth){RESET}")
     print(f"{BLOOD}  [•] Thư mục ngôn   : {WHITE}NGÔN/  (đọc MỌI file .txt/.md/.ngon){RESET}")
     print(f"{BLOOD}  [•] Tag user       : {WHITE}/treongon — tag CUỐI mỗi dòng{RESET}")
-    print(f"{BLOOD}  [•] Prefix         : {WHITE}t?help  t?spam  t?treongon{RESET}")
-    print(f"{BLOOD}  [•] Web Dashboard  : {WHITE}ENABLED{RESET}")
+    print(f"{BLOOD}  [•] Lệnh mới       : {WHITE}/custrangthai — đổi trạng thái bot{RESET}")
+    print(f"{BLOOD}  [•] Web Dashboard  : {WHITE}3 mục (cmds/guild/link){RESET}")
     print(f"{BLOOD}  [•] WebSocket      : {WHITE}ENABLED /ws?secret=***{RESET}")
     print(f"{BLOOD}  [•] Status         : {WHITE}ĐANG KHỞI ĐỘNG...{RESET}")
     print(f"{DARK_RED}{'─'*70}{RESET}")
@@ -126,8 +126,10 @@ USERS_FILE       = "users.json"
 PANEL_FILE       = "panel.json"
 MSG_FILE         = "noidung.txt"
 XA_DIR           = Path("Xả")
-NGON_DIR         = Path("NGÔN")           # 👈 Thư mục chứa file ngôn
+NGON_DIR         = Path("NGÔN")
 FFMPEG           = os.getenv("FFMPEG_PATH", "ffmpeg")
+
+INVITE_LINK      = "discord.gg/sQusu2fand"   # 👈 Link server hiển thị trên dashboard
 
 PORT             = int(os.getenv("PORT", "8080"))
 WS_SECRET        = os.getenv("WS_SECRET", "haridwg_secret_2025")
@@ -162,13 +164,20 @@ server_prefixes: Dict[str, str]  = _load(PREFIX_FILE)
 invites_cache:  Dict[str, dict]  = _load(INVITE_FILE)
 extra_owners:   set              = set(_load(OWNERS_FILE, []))
 extra_users:    set              = set(_load(USERS_FILE, []))
-panel_config:   dict             = _load(PANEL_FILE, {"name": "HARIDWG PANEL"})
+panel_config:   dict             = _load(PANEL_FILE, {"name": "HARIDWG PANEL", "status": "online"})
 
 def get_panel_name() -> str:
     return str(panel_config.get("name", "HARIDWG PANEL"))
 
 def set_panel_name(name: str):
     panel_config["name"] = name
+    _save(PANEL_FILE, panel_config)
+
+def get_panel_status() -> str:
+    return str(panel_config.get("status", "online"))
+
+def set_panel_status(status: str):
+    panel_config["status"] = status
     _save(PANEL_FILE, panel_config)
 
 user_cooldowns: Dict[int, float] = {}
@@ -218,12 +227,10 @@ def sanitize(text: str, max_len: int = 2000) -> str:
 
 # ══════════════════════════════════════════════════════════════
 #  NGÔN — File scanner + parser + auto-create
-#  Đọc MỌI file .txt / .md / .ngon trong NGÔN/ (không lọc tên)
 # ══════════════════════════════════════════════════════════════
 ALLOWED_EXT = (".txt", ".md", ".ngon")
 
 def find_ngon_files() -> List[Path]:
-    """Quét TẤT CẢ file .txt/.md/.ngon trong thư mục NGÔN/ — không lọc theo tên."""
     NGON_DIR.mkdir(exist_ok=True)
     results = []
     try:
@@ -238,7 +245,6 @@ def find_ngon_files() -> List[Path]:
     return sorted(results, key=lambda p: p.name.lower())
 
 def read_ngon_file(path: Path) -> List[str]:
-    """Đọc file — giữ NGUYÊN mọi dòng không trống (kể cả dòng `#`)."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             lines = [l.rstrip("\r\n") for l in f]
@@ -248,17 +254,11 @@ def read_ngon_file(path: Path) -> List[str]:
         return []
 
 def parse_ngon_source(nguon: str) -> List[str]:
-    """Tìm file theo thứ tự: NGÔN/ → thư mục gốc → text tự viết.
-    Chấp nhận CẢ tên file có hoặc không có extension."""
     if not nguon: return []
-
-    # 1) Tìm chính xác trong NGÔN/
     for ext in ("", ".txt", ".md", ".ngon"):
         cand = NGON_DIR / (nguon + ext)
         if cand.exists() and cand.is_file():
             return read_ngon_file(cand)
-
-    # 2) Fallback: tìm ở thư mục gốc
     p = Path(nguon)
     if p.exists() and p.is_file():
         return read_ngon_file(p)
@@ -266,15 +266,12 @@ def parse_ngon_source(nguon: str) -> List[str]:
         cand = Path(nguon + ext)
         if cand.exists() and cand.is_file():
             return read_ngon_file(cand)
-
-    # 3) Coi là text tự viết
     text = nguon.strip()
     if "\n" in text: parts = [l.strip() for l in text.split("\n")]
     elif "|" in text: parts = [l.strip() for l in text.split("|")]
     else: parts = [text]
     return [l for l in parts if l]
 
-# ─── 10 file mẫu tự tạo khi khởi động ────────────────────────
 DEFAULT_NGON_FILES = {
     "1.txt":  "Xin chào mọi người 👋\nChúc một ngày tốt lành 🌸\n",
     "2.txt":  "HARIDWG PANEL đã online\nBot đang chạy ổn định ✅\n",
@@ -284,12 +281,11 @@ DEFAULT_NGON_FILES = {
     "6.txt":  "# Dòng này cũng gửi luôn\nComment không bị lọc đâu\n# Test comment\n",
     "7.txt":  "Test bot lần 1\nTest bot lần 2\nTest bot lần 3\n",
     "8.txt":  "Server này đông vui ghê 🎉\nMọi người thân thiện quá!\n",
-    "9.txt":  "HARIDWG PANEL v4.4\nTính năng: treo voice, spam, xả nhạc\n",
+    "9.txt":  "HARIDWG PANEL v4.5\nTính năng: treo voice, spam, xả nhạc\n",
     "10.txt": "Cảm ơn đã sử dụng bot 💖\nĐừng quên vote cho bot nhé ⭐\n",
 }
 
 def ensure_ngon_files():
-    """Tạo file mẫu trong NGÔN/ nếu CHƯA có. KHÔNG ghi đè file có sẵn."""
     NGON_DIR.mkdir(exist_ok=True)
     created, skipped = [], []
     for name, content in DEFAULT_NGON_FILES.items():
@@ -309,7 +305,6 @@ def ensure_ngon_files():
         log.info(f"📁 Đã có sẵn {len(skipped)} file trong {NGON_DIR}/ (bỏ qua)")
     return created, skipped
 
-# ─── Autocomplete — hiện MỌI file trong NGÔN/ ────────────────
 async def ngon_autocomplete(interaction: discord.Interaction, current: str):
     files = find_ngon_files()
     cur = (current or "").lower()
@@ -413,7 +408,7 @@ async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
     embed = {
         "title": f"📋 [{get_panel_name()}] LỆNH VỪA SỬ DỤNG",
         "color": 0xE7000B, "fields": fields,
-        "footer": {"text": f"{get_panel_name()} • v4.4"},
+        "footer": {"text": f"{get_panel_name()} • v4.5"},
     }
     try:
         async with aiohttp.ClientSession() as s:
@@ -666,9 +661,10 @@ async def prefix_help(ctx: commands.Context):
     e.add_field(name="⚡ SLASH", value=(
         "`/help` `/treoroom` `/treongon` `/spam` `/xa`\n"
         "`/dungtreo` `/addprefix` `/leave`\n"
-        "`/adduser` `/addowner` `/customrpl`"
+        "`/adduser` `/addowner` `/customrpl`\n"
+        "`/custrangthai` — Đổi trạng thái bot"
     ), inline=False)
-    e.set_footer(text=f"{get_panel_name()} • v4.4 🛡️")
+    e.set_footer(text=f"{get_panel_name()} • v4.5 🛡️")
     await ctx.reply(embed=e, mention_author=False)
 
 @bot.command(name="spam")
@@ -708,34 +704,18 @@ async def prefix_treongon(ctx: commands.Context,
                           tokens: str,
                           so_lan: int = 1,
                           *args):
-    """
-    Cú pháp: t?treongon <channel_id> <tokens> <so_lan> [delay|_] [nguon] [@user]
-    - delay: tối thiểu 3 giây
-    - nguon: tên file trong NGÔN/ (MỌI file .txt/.md/.ngon) HOẶC text tự viết
-    - @user (tùy chọn, đặt CUỐI): tag vào CUỐI mỗi dòng
-    """
     if not prefix_user_guard(ctx): return
-
     tok_list = parse_tokens(tokens)
     if not tok_list: await ctx.reply("❌ Token không hợp lệ."); return
-
     try: cid = int(channel_id)
     except ValueError: await ctx.reply("❌ ID kênh không hợp lệ."); return
-
-    # ─── Parse args: delay + nguon + user ───
-    delay = 3.0
-    parts = list(args)
-    tag_user_id: Optional[int] = None
-
-    # Tách @user ở CUỐI (nếu có)
+    delay = 3.0; parts = list(args); tag_user_id: Optional[int] = None
     if parts:
         last = parts[-1]
         m = re.fullmatch(r"<@!?(\d+)>", last)
         if m:
             tag_user_id = int(m.group(1))
             parts = parts[:-1]
-
-    # Parse delay
     nguon_text = ""
     if parts:
         first = parts[0]
@@ -743,52 +723,32 @@ async def prefix_treongon(ctx: commands.Context,
             nguon_text = " ".join(parts[1:]).strip()
         else:
             try:
-                delay = float(first)
-                nguon_text = " ".join(parts[1:]).strip()
+                delay = float(first); nguon_text = " ".join(parts[1:]).strip()
             except ValueError:
                 nguon_text = " ".join(parts).strip()
-
     if delay < 3.0: delay = 3.0
-
-    # ─── Lấy nội dung ───
     lines = parse_ngon_source(nguon_text)
     used_from = ""
     if lines:
         found = False
         for ext in ("", ".txt", ".md", ".ngon"):
             if (NGON_DIR / (nguon_text + ext)).exists():
-                used_from = f"file `NGÔN/{nguon_text}{ext}`"
-                found = True
-                break
+                used_from = f"file `NGÔN/{nguon_text}{ext}`"; found = True; break
         if not found:
             p = Path(nguon_text)
-            if p.exists() and p.is_file():
-                used_from = f"file `{p.name}`"
-            else:
-                used_from = "text tự viết"
-
+            if p.exists() and p.is_file(): used_from = f"file `{p.name}`"
+            else: used_from = "text tự viết"
     if not lines:
         lines = read_messages()
         if lines: used_from = f"file mặc định `{MSG_FILE}`"
-
-    if not lines:
-        await ctx.reply(
-            "❌ Không có nội dung.\n"
-            f"• Cú pháp: `{ctx.prefix}treongon <channel_id> <tokens> <số_lần> [delay|_] [nguon] [@user]`\n"
-            f"• VD: `{ctx.prefix}treongon 123456 MTIzNDU2 5 _ 1.txt @user`")
-        return
-
-    # 🆕 Tag suffix (đặt CUỐI dòng)
+    if not lines: await ctx.reply("❌ Không có nội dung."); return
     tag_suffix = f" <@{tag_user_id}>" if tag_user_id else ""
-
     stop = register_stop()
-
     async def _token_loop(tok):
         for _ in range(so_lan if so_lan > 0 else 10**9):
             if stop.is_set(): return
             for line in lines:
                 if stop.is_set(): return
-                # Nếu dòng đã có mention ở CUỐI → giữ nguyên, chưa có → thêm tag
                 if tag_suffix and not line.rstrip().endswith(">"):
                     content = f"{line}{tag_suffix}"
                 else:
@@ -796,21 +756,16 @@ async def prefix_treongon(ctx: commands.Context,
                 ok = await send_token_message(tok, cid, sanitize(content))
                 if not ok: await asyncio.sleep(2)
                 else: await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.1, 0.1)))
-
     async def run_all():
         tasks = [asyncio.create_task(_token_loop(tok)) for tok in tok_list]
         try: await asyncio.gather(*tasks)
         except Exception as e: log.error(f"prefix_treongon: {e}")
         finally: unregister_stop(stop)
-
     asyncio.create_task(run_all())
-
     try: await ctx.message.delete()
     except Exception: pass
-
     tag_info = f" | Tag (cuối): <@{tag_user_id}>" if tag_user_id else " | Không tag"
-    await ctx.reply(
-        f"🚀 Gửi {used_from} ({len(lines)} câu) | delay `{delay}s` | loops `{so_lan if so_lan>0 else '∞'}`{tag_info}")
+    await ctx.reply(f"🚀 Gửi {used_from} ({len(lines)} câu) | delay `{delay}s` | loops `{so_lan if so_lan>0 else '∞'}`{tag_info}")
 
 @bot.command(name="adduser")
 async def prefix_adduser(ctx: commands.Context, target: str):
@@ -900,7 +855,11 @@ async def slash_help(inter: discord.Interaction):
         "`/help` `/treoroom` `/spam` `/xa`\n"
         "`/treongon` — Nhắn từ file NGÔN/ (tag user ở CUỐI dòng)"
     ), inline=False)
-    e.add_field(name="👑 OWNER", value="`/dungtreo` `/addprefix` `/leave` `/adduser` `/addowner` `/customrpl`", inline=False)
+    e.add_field(name="👑 OWNER", value=(
+        "`/dungtreo` `/addprefix` `/leave`\n"
+        "`/adduser` `/addowner` `/customrpl`\n"
+        "`/custrangthai` — Đổi trạng thái bot"
+    ), inline=False)
     await inter.response.send_message(embed=e, ephemeral=True)
 
 @bot.tree.command(name="customrpl", description="Đổi tên panel (owner)")
@@ -912,9 +871,29 @@ async def slash_customrpl(inter: discord.Interaction, name: str):
         await inter.response.send_message("❌ Tên 1-60 ký tự.", ephemeral=True); return
     old = get_panel_name(); set_panel_name(name)
     await inter.response.send_message(f"✅ Đổi: `{old}` → `{name}`", ephemeral=True)
-    try:
-        await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=name), status=discord.Status.dnd)
-    except Exception: pass
+    # Cập nhật presence với tên mới
+    await apply_bot_presence()
+
+# 🆕 /custrangthai — Đổi trạng thái bot
+@bot.tree.command(name="custrangthai", description="Đổi trạng thái hiển thị của bot (owner)")
+@app_commands.describe(trangthai="Chọn trạng thái")
+@app_commands.choices(trangthai=[
+    app_commands.Choice(name="🟢 Trực tuyến", value="online"),
+    app_commands.Choice(name="🌙 Chờ", value="idle"),
+    app_commands.Choice(name="⛔ Vui lòng làm phiền", value="dnd"),
+    app_commands.Choice(name="⚪ Vô hình", value="invisible"),
+])
+async def slash_custrangthai(inter: discord.Interaction, trangthai: app_commands.Choice[str]):
+    if not await slash_owner_guard(inter): return
+    status_value = trangthai.value
+    set_panel_status(status_value)
+    await apply_bot_presence()
+    emoji_map = {"online": "🟢", "idle": "🌙", "dnd": "⛔", "invisible": "⚪"}
+    await inter.response.send_message(
+        f"✅ Đã đổi trạng thái bot thành: {emoji_map.get(status_value, '')} **{trangthai.name}**",
+        ephemeral=True)
+    asyncio.create_task(report(inter.user, inter.guild, inter.channel,
+        f"/custrangthai {status_value}", f"Trạng thái: `{status_value}`"))
 
 @bot.tree.command(name="addprefix", description="Đổi prefix server (owner)")
 async def slash_addprefix(inter: discord.Interaction, prefix: str):
@@ -978,7 +957,6 @@ async def slash_dungtreoall(inter: discord.Interaction):
     r = stop_all_activity()
     await inter.response.send_message(f"🛑 Đã dừng **{r['voice']}** voice + **{r['tasks']}** task.", ephemeral=True)
 
-# 🆕 /treongon — tag CUỐI dòng
 @bot.tree.command(name="treongon", description="Nhắn nội dung từ file NGÔN/ (tag user ở CUỐI dòng)")
 @app_commands.describe(
     delay="Delay giây (tối thiểu 3)",
@@ -1001,25 +979,19 @@ async def slash_treongon(inter: discord.Interaction,
                          file: Optional[discord.Attachment] = None,
                          nguon: Optional[str] = None):
     if not await slash_user_guard(inter): return
-
     tok_list = parse_tokens(tokens)
     if not tok_list:
         await inter.response.send_message("❌ Token không hợp lệ.", ephemeral=True); return
-
     try: cid = int(channel_id)
     except ValueError:
         await inter.response.send_message("❌ `channel_id` không hợp lệ.", ephemeral=True); return
-
     try: sid = int(server_id)
     except ValueError:
         await inter.response.send_message("❌ `server_id` không hợp lệ.", ephemeral=True); return
-
     if delay is None or delay < 3.0: delay = 3.0
     if so_lan is None: so_lan = 1
-
     lines: List[str] = []
     used_from = ""
-
     if file is not None:
         NGON_DIR.mkdir(exist_ok=True)
         fname = file.filename
@@ -1038,21 +1010,15 @@ async def slash_treongon(inter: discord.Interaction,
     else:
         lines = read_messages()
         if lines: used_from = f"file mặc định `{MSG_FILE}`"
-
     if not lines:
         await inter.response.send_message("❌ Không có nội dung.", ephemeral=True); return
-
-    # 🆕 Tag suffix (đặt CUỐI dòng)
     tag_suffix = f" <@{user.id}>" if user else ""
-
     stop = register_stop()
-
     async def _token_loop(tok):
         for _ in range(so_lan if so_lan > 0 else 10**9):
             if stop.is_set(): return
             for line in lines:
                 if stop.is_set(): return
-                # Nếu dòng đã có mention ở CUỐI → giữ nguyên, chưa có → thêm tag
                 if tag_suffix and not line.rstrip().endswith(">"):
                     content = f"{line}{tag_suffix}"
                 else:
@@ -1060,7 +1026,6 @@ async def slash_treongon(inter: discord.Interaction,
                 ok = await send_token_message(tok, cid, sanitize(content))
                 if not ok: await asyncio.sleep(2)
                 else: await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.1, 0.1)))
-
     async def run_all():
         tasks = [asyncio.create_task(_token_loop(tok)) for tok in tok_list]
         try:
@@ -1069,9 +1034,7 @@ async def slash_treongon(inter: discord.Interaction,
             log.error(f"treongon: {e}")
         finally:
             unregister_stop(stop)
-
     asyncio.create_task(run_all())
-
     preview_line = lines[0] if lines else ""
     preview = f"{preview_line}{tag_suffix}"[:120] + (" ..." if len(lines) > 1 else "")
     tag_info = f" | Tag (cuối): <@{user.id}>" if user else " | Không tag"
@@ -1167,6 +1130,29 @@ async def slash_xa(inter: discord.Interaction, tokens: str, channel_id: str, use
     await inter.response.send_message(f"🎶 Đã treo **{started}** token vào `{cid}` với `{target_path.name}`.", ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════
+#  PRESENCE HELPER
+# ══════════════════════════════════════════════════════════════
+async def apply_bot_presence():
+    """Áp dụng trạng thái + tên panel vào presence của bot."""
+    try:
+        status_str = get_panel_status()
+        status_map = {
+            "online":    discord.Status.online,
+            "idle":      discord.Status.idle,
+            "dnd":       discord.Status.dnd,
+            "invisible": discord.Status.invisible,
+        }
+        status = status_map.get(status_str, discord.Status.online)
+        activity = discord.Activity(
+            type=discord.ActivityType.watching,
+            name=get_panel_name()
+        )
+        await bot.change_presence(status=status, activity=activity)
+        log.info(f"[PRESENCE] Đã set: status={status_str} | name={get_panel_name()}")
+    except Exception as e:
+        log.error(f"apply_bot_presence: {e}")
+
+# ══════════════════════════════════════════════════════════════
 #  WEB SERVER + WEBSOCKET
 # ══════════════════════════════════════════════════════════════
 HTML_PAGE = r"""<!DOCTYPE html>
@@ -1184,21 +1170,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
   @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
   .header{font-size:30px;color:#ff0000;text-shadow:0 0 12px #ff0000;letter-spacing:5px;margin-bottom:6px;text-align:center}
   .subtitle{color:#888;font-size:11px;margin-bottom:35px;letter-spacing:3px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:20px;width:100%;max-width:960px}
-  .card{background:linear-gradient(145deg,#1a0000,#0d0000);border:1px solid #ff0000;border-radius:12px;padding:24px;
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px;width:100%;max-width:960px}
+  .card{background:linear-gradient(145deg,#1a0000,#0d0000);border:1px solid #ff0000;border-radius:12px;padding:28px;
     box-shadow:0 0 25px rgba(255,0,0,.2);position:relative;overflow:hidden;transition:transform .2s,box-shadow .2s}
   .card:hover{transform:translateY(-4px);box-shadow:0 0 35px rgba(255,0,0,.4)}
   .card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;
     background:linear-gradient(90deg,#ff0000,#ff5555,#ff0000)}
   .card-label{font-size:11px;color:#ff5555;text-transform:uppercase;letter-spacing:3px;margin-bottom:14px}
-  .card-value{font-size:34px;font-weight:bold;color:#fff;text-shadow:0 0 10px rgba(255,0,0,.6);display:flex;align-items:center;gap:10px}
+  .card-value{font-size:36px;font-weight:bold;color:#fff;text-shadow:0 0 10px rgba(255,0,0,.6);display:flex;align-items:center;gap:10px}
   .card-sub{font-size:11px;color:#666;margin-top:10px;letter-spacing:1px}
-  .status-online{color:#00ff88!important;text-shadow:0 0 15px #00ff88!important;font-size:26px!important}
-  .status-offline{color:#ff0000!important;text-shadow:0 0 15px #ff0000!important;font-size:26px!important}
-  .dot{display:inline-block;width:12px;height:12px;border-radius:50%;flex-shrink:0;animation:pulse 2s infinite}
-  .dot.online{background:#00ff88;box-shadow:0 0 15px #00ff88}
-  .dot.offline{background:#ff0000;box-shadow:0 0 15px #ff0000;animation:none}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .card-value a{color:#00ff88;text-decoration:none;text-shadow:0 0 12px #00ff88;font-size:24px}
+  .card-value a:hover{text-decoration:underline}
   .footer{margin-top:40px;color:#333;font-size:10px;letter-spacing:3px;text-align:center}
   .footer a{color:#ff0000;text-decoration:none}
   .ws-status{position:fixed;top:14px;right:14px;font-size:10px;color:#555;padding:6px 12px;border:1px solid #333;border-radius:20px;background:#000;letter-spacing:1px}
@@ -1212,48 +1194,33 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <div class="ws-status off" id="wsStat">● WS: KẾT NỐI...</div>
 <div class="mask glow">🎭</div>
 <div class="header">{{PANEL_NAME}}</div>
-<div class="subtitle">● 🛡️ ANTI-DDOS + NGÔN/ + TAG CUỐI 🛡️ ●</div>
+<div class="subtitle">● {{INVITE_LINK}} ●</div>
 <div class="grid">
-  <div class="card"><div class="card-label">Trạng thái Bot</div>
-    <div class="card-value"><span class="dot offline" id="dot"></span>
-      <span class="status-offline" id="status-text">Đang tải...</span></div>
-    <div class="card-sub" id="bot-info">—</div></div>
-  <div class="card"><div class="card-label">Số Server Bot Ở</div>
-    <div class="card-value" id="guilds">—</div><div class="card-sub">guild</div></div>
-  <div class="card"><div class="card-label">Số Câu Lệnh</div>
-    <div class="card-value" id="cmds">—</div><div class="card-sub" id="cmd-sub">slash + prefix</div></div>
-  <div class="card"><div class="card-label">Voice Đang Treo</div>
-    <div class="card-value" id="voice">—</div><div class="card-sub">worker</div></div>
-  <div class="card"><div class="card-label">Task Đang Chạy</div>
-    <div class="card-value" id="tasks">—</div><div class="card-sub">spam / treongon</div></div>
-  <div class="card"><div class="card-label">IP Bị Chặn</div>
-    <div class="card-value" id="blocked">—</div><div class="card-sub">đang block</div></div>
-  <div class="card"><div class="card-label">File Trong NGÔN/</div>
-    <div class="card-value" id="ngonfiles">—</div><div class="card-sub">file nội dung</div></div>
-  <div class="card"><div class="card-label">Uptime</div>
-    <div class="card-value" id="uptime">—</div><div class="card-sub">kể từ khởi động</div></div>
+  <div class="card">
+    <div class="card-label">Số Câu Lệnh</div>
+    <div class="card-value" id="cmds">—</div>
+    <div class="card-sub" id="cmd-sub">slash + prefix</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Số Server Bot Ở</div>
+    <div class="card-value" id="guilds">—</div>
+    <div class="card-sub">guild</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Link Server Bot</div>
+    <div class="card-value"><a href="https://{{INVITE_LINK}}" target="_blank">🔗 {{INVITE_LINK}}</a></div>
+    <div class="card-sub">nhấn để tham gia</div>
+  </div>
 </div>
-<div class="footer">{{PANEL_NAME}} • v4.4 🛡️ • WebSocket Realtime<br>
+<div class="footer">{{PANEL_NAME}} • v4.5 🛡️ • WebSocket Realtime<br>
 <a href="/api/status">/api/status</a> • <a href="/health">/health</a> • /ws</div>
 <script>
 let ws, rt;
-function fmtUp(s){s=Math.floor(s);const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),
-  m=Math.floor((s%3600)/60),x=s%60;if(d)return d+'d '+h+'h '+m+'m';if(h)return h+'h '+m+'m';
-  if(m)return m+'m '+x+'s';return x+'s';}
-function ui(d){const on=d.bot_status==='ONLINE';
-  document.getElementById('dot').className='dot '+(on?'online':'offline');
-  const st=document.getElementById('status-text');
-  st.textContent=on?'ONLINE':'OFFLINE';
-  st.className=on?'status-online':'status-offline';
-  document.getElementById('bot-info').textContent=d.bot_name+' • ID '+(d.bot_id||'—');
-  document.getElementById('guilds').textContent=d.guild_count;
+function ui(d){
   document.getElementById('cmds').textContent=d.slash_count+d.prefix_count;
   document.getElementById('cmd-sub').textContent=d.slash_count+' slash + '+d.prefix_count+' prefix';
-  document.getElementById('voice').textContent=d.voice_workers;
-  document.getElementById('tasks').textContent=d.active_tasks||0;
-  document.getElementById('blocked').textContent=d.blocked_ips||0;
-  document.getElementById('ngonfiles').textContent=d.ngon_files||0;
-  document.getElementById('uptime').textContent=fmtUp(d.uptime);}
+  document.getElementById('guilds').textContent=d.guild_count;
+}
 function setWs(s){const el=document.getElementById('wsStat');
   el.className='ws-status '+(s==='on'?'on':'off');
   el.textContent=s==='on'?'● WS: ONLINE':'● WS: RECONNECT...';}
@@ -1274,9 +1241,6 @@ setInterval(async()=>{if(ws&&ws.readyState===WebSocket.OPEN)return;
 
 def get_status_dict() -> dict:
     online = bot.is_ready() and bot.user is not None
-    blocked_now = sum(1 for t in ip_blocked_until.values() if t > time.time())
-    try: ngon_count = len(find_ngon_files())
-    except Exception: ngon_count = 0
     return {
         "panel_name": get_panel_name(),
         "bot_status": "ONLINE" if online else "OFFLINE",
@@ -1288,13 +1252,13 @@ def get_status_dict() -> dict:
         "prefix_count": len([c for c in bot.commands]),
         "voice_workers": len(active_voice_workers),
         "active_tasks": len(_active_stop_events),
-        "blocked_ips": blocked_now,
-        "ngon_files": ngon_count,
         "uptime": time.time() - BOT_START_TIME,
     }
 
 async def handle_index(request):
-    html = HTML_PAGE.replace("{{PANEL_NAME}}", get_panel_name())
+    html = (HTML_PAGE
+            .replace("{{PANEL_NAME}}", get_panel_name())
+            .replace("{{INVITE_LINK}}", INVITE_LINK))
     return aioweb.Response(text=html, content_type="text/html")
 
 async def handle_health(request):
@@ -1415,17 +1379,18 @@ async def on_ready():
         synced = await bot.tree.sync()
         print(f"{Fore.CYAN}[{OWNER_NAME.upper()}] ✅ Synced {len(synced)} slash commands{Style.RESET_ALL}")
     except Exception as e: log.error(f"sync: {e}")
-    try:
-        await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=get_panel_name()), status=discord.Status.dnd)
-    except Exception: pass
+    # Áp dụng presence từ panel.json
+    await apply_bot_presence()
     ngon_list = [f.name for f in find_ngon_files()]
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🎭 Panel: {get_panel_name()} 🛡️{RESET}{Style.RESET_ALL}")
+    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🎮 Status: {get_panel_status()}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👑 Owner gốc: {sorted(DEFAULT_OWNER_IDS)}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👑 Owner thêm: {sorted(extra_owners) or '—'}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👤 User thêm : {sorted(extra_users) or '—'}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 📁 NGÔN/ có {len(ngon_list)} file: {ngon_list[:15]}{'...' if len(ngon_list)>15 else ''}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🌐 Dashboard : http://0.0.0.0:{PORT}{Style.RESET_ALL}")
+    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🔗 Invite    : {INVITE_LINK}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🛡️ Anti-DDoS : ON ({RATE_LIMIT_MAX_REQ}req/{RATE_LIMIT_WINDOW}s){Style.RESET_ALL}")
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
 
