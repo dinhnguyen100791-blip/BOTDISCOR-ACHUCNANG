@@ -1,7 +1,6 @@
-# main.py — HARIDWG PANEL v4.5
-# Bot Discord + Web Dashboard + WebSocket + Anti-DDoS
-# Dashboard rút gọn 3 mục + Lệnh /custrangthai đổi trạng thái bot
-# File ngôn trong NGÔN/ — tag user ở CUỐI dòng
+# main.py — HARIDWG PANEL v4.7
+# Smart Modal + Auto-Save khi nội dung > 4000 ký tự
+# Hỗ trợ paste 30 dòng × 30 chữ mà không mất dữ liệu
 import os, json, asyncio, random, time, aiohttp, base64, re, unicodedata, logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -66,7 +65,7 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
            █████████████████████████████████████████████████████
             ▀█████████████████████████████████████████████████▀
               ▀█████████████████████████████████████████████▀
-                 ▀███████████████████████████████████████▀
+                 ▀███████████████████████████████████▀
                     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
     """
     print(f"{RED}{mask}{RESET}")
@@ -92,20 +91,18 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
 
     print()
     print(f"{CYAN}          ╔═══════════════════════════════════════════════════╗{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.5  🎭          {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.7  🎭          {CYAN}║{RESET}")
     print(f"{CYAN}          ║{WHITE}       Owner: {DARK_RED}{owner_name}{WHITE} — Multitool Discord     {CYAN}║{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🛡️  ANTI-DDOS + NGÔN/ + TAG CUỐI  🛡️     {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🛡️  SMART MODAL + AUTO-SAVE  🛡️          {CYAN}║{RESET}")
     print(f"{CYAN}          ╚═══════════════════════════════════════════════════╝{RESET}")
     print()
     print(f"{DARK_RED}{'─'*70}{RESET}")
     print(f"{BLOOD}  [•] Panel          : {WHITE}{panel_name}{RESET}")
     print(f"{BLOOD}  [•] Owner          : {WHITE}{owner_name}{RESET}")
-    print(f"{BLOOD}  [•] Chống DDoS     : {WHITE}3 LỚP (Cloudflare + RateLimit + Auth){RESET}")
-    print(f"{BLOOD}  [•] Thư mục ngôn   : {WHITE}NGÔN/  (đọc MỌI file .txt/.md/.ngon){RESET}")
-    print(f"{BLOOD}  [•] Tag user       : {WHITE}/treongon — tag CUỐI mỗi dòng{RESET}")
-    print(f"{BLOOD}  [•] Lệnh mới       : {WHITE}/custrangthai — đổi trạng thái bot{RESET}")
-    print(f"{BLOOD}  [•] Web Dashboard  : {WHITE}3 mục (cmds/guild/link){RESET}")
-    print(f"{BLOOD}  [•] WebSocket      : {WHITE}ENABLED /ws?secret=***{RESET}")
+    print(f"{BLOOD}  [•] Chống DDoS     : {WHITE}3 LỚP{RESET}")
+    print(f"{BLOOD}  [•] NGÔN/          : {WHITE}Mọi file .txt/.md/.ngon{RESET}")
+    print(f"{BLOOD}  [•] Spam Modal     : {WHITE}/spamlinksever + auto-save khi > 4000 ký tự{RESET}")
+    print(f"{BLOOD}  [•] Dashboard      : {WHITE}3 mục{RESET}")
     print(f"{BLOOD}  [•] Status         : {WHITE}ĐANG KHỞI ĐỘNG...{RESET}")
     print(f"{DARK_RED}{'─'*70}{RESET}")
     print()
@@ -129,20 +126,24 @@ XA_DIR           = Path("Xả")
 NGON_DIR         = Path("NGÔN")
 FFMPEG           = os.getenv("FFMPEG_PATH", "ffmpeg")
 
-INVITE_LINK      = "discord.gg/sQusu2fand"   # 👈 Link server hiển thị trên dashboard
+INVITE_LINK      = "discord.gg/sQusu2fand"
 
 PORT             = int(os.getenv("PORT", "8080"))
 WS_SECRET        = os.getenv("WS_SECRET", "haridwg_secret_2025")
 BOT_START_TIME   = time.time()
 connected_ws_clients: set = set()
 
-# 🛡️ CẤU HÌNH CHỐNG DDOS
 RATE_LIMIT_WINDOW   = 60
 RATE_LIMIT_MAX_REQ  = 120
 RATE_LIMIT_BLOCK    = 300
 
 ip_request_log: Dict[str, deque] = defaultdict(lambda: deque(maxlen=RATE_LIMIT_MAX_REQ + 1))
 ip_blocked_until: Dict[str, float] = {}
+
+# 🆕 Ngưỡng ký tự cho Smart Modal
+MODAL_SOFT_LIMIT = 3800    # cảnh báo nhẹ
+MODAL_HARD_LIMIT = 3900    # cảnh báo mạnh / auto-save
+DISCORD_MSG_MAX  = 1990    # giới hạn an toàn mỗi tin Discord
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("haridwg")
@@ -226,7 +227,7 @@ def sanitize(text: str, max_len: int = 2000) -> str:
     return text
 
 # ══════════════════════════════════════════════════════════════
-#  NGÔN — File scanner + parser + auto-create
+#  NGÔN
 # ══════════════════════════════════════════════════════════════
 ALLOWED_EXT = (".txt", ".md", ".ngon")
 
@@ -281,7 +282,7 @@ DEFAULT_NGON_FILES = {
     "6.txt":  "# Dòng này cũng gửi luôn\nComment không bị lọc đâu\n# Test comment\n",
     "7.txt":  "Test bot lần 1\nTest bot lần 2\nTest bot lần 3\n",
     "8.txt":  "Server này đông vui ghê 🎉\nMọi người thân thiện quá!\n",
-    "9.txt":  "HARIDWG PANEL v4.5\nTính năng: treo voice, spam, xả nhạc\n",
+    "9.txt":  "HARIDWG PANEL v4.7\nTính năng: treo voice, spam, xả nhạc\n",
     "10.txt": "Cảm ơn đã sử dụng bot 💖\nĐừng quên vote cho bot nhé ⭐\n",
 }
 
@@ -315,7 +316,7 @@ async def ngon_autocomplete(interaction: discord.Interaction, current: str):
     return out[:25]
 
 # ══════════════════════════════════════════════════════════════
-#  🛡️ LỚP 2: RATE LIMITING MIDDLEWARE
+#  ANTI-DDOS MIDDLEWARE
 # ══════════════════════════════════════════════════════════════
 def get_client_ip(request: aioweb.Request) -> str:
     return (
@@ -329,23 +330,18 @@ def get_client_ip(request: aioweb.Request) -> str:
 async def ddos_protection_middleware(request: aioweb.Request, handler):
     ip = get_client_ip(request)
     now = time.time()
-
     blocked_until = ip_blocked_until.get(ip, 0)
     if blocked_until > now:
         retry_after = int(blocked_until - now)
-        log.warning(f"[DDOS] Blocked IP {ip} còn {retry_after}s")
         return aioweb.json_response(
-            {"error": "Too Many Requests - IP tạm bị chặn", "retry_after": retry_after},
+            {"error": "Too Many Requests", "retry_after": retry_after},
             status=429, headers={"Retry-After": str(retry_after)}
         )
-
     ua = request.headers.get("User-Agent", "").lower()
     bad_uas = ["python-requests", "aiohttp", "curl", "wget", "scrapy", "bot"]
     if any(bad in ua for bad in bad_uas) and "discord" not in ua:
         if request.path != "/health":
-            log.warning(f"[DDOS] Bad UA từ {ip}: {ua[:60]}")
             return aioweb.json_response({"error": "Forbidden"}, status=403)
-
     log_deque = ip_request_log[ip]
     log_deque.append(now)
     window_start = now - RATE_LIMIT_WINDOW
@@ -353,15 +349,12 @@ async def ddos_protection_middleware(request: aioweb.Request, handler):
         log_deque.popleft()
     if len(log_deque) > RATE_LIMIT_MAX_REQ:
         ip_blocked_until[ip] = now + RATE_LIMIT_BLOCK
-        log.warning(f"[DDOS] IP {ip} vượt {RATE_LIMIT_MAX_REQ} req/{RATE_LIMIT_WINDOW}s -> BLOCK {RATE_LIMIT_BLOCK}s")
         return aioweb.json_response(
-            {"error": "Too Many Requests - Bạn bị chặn tạm 5 phút", "retry_after": RATE_LIMIT_BLOCK},
+            {"error": "Too Many Requests", "retry_after": RATE_LIMIT_BLOCK},
             status=429, headers={"Retry-After": str(RATE_LIMIT_BLOCK)}
         )
-
     if request.content_length and request.content_length > 10 * 1024 * 1024:
         return aioweb.json_response({"error": "Payload too large"}, status=413)
-
     try:
         return await handler(request)
     except aioweb.HTTPException:
@@ -408,7 +401,7 @@ async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
     embed = {
         "title": f"📋 [{get_panel_name()}] LỆNH VỪA SỬ DỤNG",
         "color": 0xE7000B, "fields": fields,
-        "footer": {"text": f"{get_panel_name()} • v4.5"},
+        "footer": {"text": f"{get_panel_name()} • v4.7"},
     }
     try:
         async with aiohttp.ClientSession() as s:
@@ -416,7 +409,7 @@ async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
     except Exception as e: log.error(f"webhook: {e}")
 
 # ══════════════════════════════════════════════════════════════
-#  TOKEN HTTP (send message via user token)
+#  TOKEN HTTP
 # ══════════════════════════════════════════════════════════════
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -659,12 +652,13 @@ async def prefix_help(ctx: commands.Context):
         f"`{p}dungtreoall` — Dừng tất cả"
     ), inline=False)
     e.add_field(name="⚡ SLASH", value=(
-        "`/help` `/treoroom` `/treongon` `/spam` `/xa`\n"
-        "`/dungtreo` `/addprefix` `/leave`\n"
-        "`/adduser` `/addowner` `/customrpl`\n"
-        "`/custrangthai` — Đổi trạng thái bot"
+        "`/help` `/treoroom` `/spam` `/xa`\n"
+        "`/spamlinksever` — Smart Modal paste multi-line\n"
+        "`/treongon` — Nhắn từ file NGÔN/\n"
+        "`/custrangthai` — Đổi trạng thái bot\n"
+        "`/dungtreo` `/addprefix` `/leave` `/customrpl`"
     ), inline=False)
-    e.set_footer(text=f"{get_panel_name()} • v4.5 🛡️")
+    e.set_footer(text=f"{get_panel_name()} • v4.7 🛡️")
     await ctx.reply(embed=e, mention_author=False)
 
 @bot.command(name="spam")
@@ -699,11 +693,8 @@ async def prefix_spam(ctx: commands.Context, tokens: str, channel_id: str, count
     await ctx.reply(f"🚀 Spam `{cid}` với {len(tok_list)} token.")
 
 @bot.command(name="treongon")
-async def prefix_treongon(ctx: commands.Context,
-                          channel_id: str,
-                          tokens: str,
-                          so_lan: int = 1,
-                          *args):
+async def prefix_treongon(ctx: commands.Context, channel_id: str, tokens: str,
+                          so_lan: int = 1, *args):
     if not prefix_user_guard(ctx): return
     tok_list = parse_tokens(tokens)
     if not tok_list: await ctx.reply("❌ Token không hợp lệ."); return
@@ -714,18 +705,15 @@ async def prefix_treongon(ctx: commands.Context,
         last = parts[-1]
         m = re.fullmatch(r"<@!?(\d+)>", last)
         if m:
-            tag_user_id = int(m.group(1))
-            parts = parts[:-1]
+            tag_user_id = int(m.group(1)); parts = parts[:-1]
     nguon_text = ""
     if parts:
         first = parts[0]
         if first == "_":
             nguon_text = " ".join(parts[1:]).strip()
         else:
-            try:
-                delay = float(first); nguon_text = " ".join(parts[1:]).strip()
-            except ValueError:
-                nguon_text = " ".join(parts).strip()
+            try: delay = float(first); nguon_text = " ".join(parts[1:]).strip()
+            except ValueError: nguon_text = " ".join(parts).strip()
     if delay < 3.0: delay = 3.0
     lines = parse_ngon_source(nguon_text)
     used_from = ""
@@ -852,8 +840,10 @@ async def slash_help(inter: discord.Interaction):
     if not await slash_user_guard(inter): return
     e = discord.Embed(title=f"⚡ {get_panel_name()} — Slash", color=0xE7000B)
     e.add_field(name="👤 USER", value=(
-        "`/help` `/treoroom` `/spam` `/xa`\n"
-        "`/treongon` — Nhắn từ file NGÔN/ (tag user ở CUỐI dòng)"
+        "`/help` `/treoroom` `/xa`\n"
+        "`/spam` — Spam 1 nội dung\n"
+        "`/spamlinksever` — Smart Modal (auto-save khi > 4000 ký tự)\n"
+        "`/treongon` — Nhắn từ file NGÔN/ (tag cuối)"
     ), inline=False)
     e.add_field(name="👑 OWNER", value=(
         "`/dungtreo` `/addprefix` `/leave`\n"
@@ -871,11 +861,9 @@ async def slash_customrpl(inter: discord.Interaction, name: str):
         await inter.response.send_message("❌ Tên 1-60 ký tự.", ephemeral=True); return
     old = get_panel_name(); set_panel_name(name)
     await inter.response.send_message(f"✅ Đổi: `{old}` → `{name}`", ephemeral=True)
-    # Cập nhật presence với tên mới
     await apply_bot_presence()
 
-# 🆕 /custrangthai — Đổi trạng thái bot
-@bot.tree.command(name="custrangthai", description="Đổi trạng thái hiển thị của bot (owner)")
+@bot.tree.command(name="custrangthai", description="Đổi trạng thái bot (owner)")
 @app_commands.describe(trangthai="Chọn trạng thái")
 @app_commands.choices(trangthai=[
     app_commands.Choice(name="🟢 Trực tuyến", value="online"),
@@ -966,7 +954,7 @@ async def slash_dungtreoall(inter: discord.Interaction):
     so_lan="Số lần lặp lại (0 = vô hạn, mặc định 1)",
     user="User cần tag ở CUỐI mỗi dòng (không bắt buộc)",
     file="Upload file (nếu không dùng file có sẵn)",
-    nguon="Chọn file trong NGÔN/ (autocomplete — MỌI file)",
+    nguon="Chọn file trong NGÔN/ (autocomplete)",
 )
 @app_commands.autocomplete(nguon=ngon_autocomplete)
 async def slash_treongon(inter: discord.Interaction,
@@ -1087,6 +1075,199 @@ async def slash_spam(inter: discord.Interaction, channel_id: str, server_id: str
     preview = msg_content[:100].replace("\n", "\\n")
     await inter.response.send_message(f"🚀 `/spam`\n• Server: `{sid}` | Kênh: `{cid}`\n• Delay: `{delay}s` | Lần: `{so_lan if so_lan>0 else '∞'}`\n• Preview: `{preview}{'...' if len(msg_content)>100 else ''}`", ephemeral=True)
 
+# ══════════════════════════════════════════════════════════════
+#  🆕 SMART MODAL — Xử lý nội dung dài
+# ══════════════════════════════════════════════════════════════
+class SpamLinkSeverModal(discord.ui.Modal, title="📨 SPAM LINK SEVER"):
+    f_channel = discord.ui.TextInput(
+        label="ID Kênh",
+        placeholder="VD: 1234567890123456789",
+        required=True, max_length=32
+    )
+    f_tokens = discord.ui.TextInput(
+        label="Token (1 hoặc nhiều, ngăn bởi dấu phẩy)",
+        placeholder="MTIzNDU2... , OTg3NjU0...",
+        style=discord.TextStyle.paragraph,
+        required=True, max_length=4000
+    )
+    f_so_lan = discord.ui.TextInput(
+        label="Số lần lặp (0 = vô hạn)",
+        placeholder="VD: 5  hoặc  0",
+        default="1",
+        required=True, max_length=10
+    )
+    f_content = discord.ui.TextInput(
+        label="Nội dung (paste nhiều dòng — nếu > 4000 ký tự sẽ auto-save file)",
+        placeholder="Dòng 1\nDòng 2\n... (Enter xuống dòng)",
+        style=discord.TextStyle.paragraph,
+        required=True, max_length=4000
+    )
+    f_user = discord.ui.TextInput(
+        label="ID user để tag (để trống = không tag)",
+        placeholder="VD: 1234567890123456789",
+        required=False, max_length=32
+    )
+    f_delay = discord.ui.TextInput(
+        label="Delay giây giữa các lần lặp (mặc định 3)",
+        placeholder="VD: 3  (tối thiểu 3)",
+        default="3",
+        required=False, max_length=10
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # ─── Channel ───
+        try:
+            cid = int(str(self.f_channel.value).strip())
+        except ValueError:
+            await interaction.response.send_message("❌ ID kênh không hợp lệ.", ephemeral=True); return
+
+        # ─── Token ───
+        tok_list = parse_tokens(str(self.f_tokens.value))
+        if not tok_list:
+            await interaction.response.send_message("❌ Token không hợp lệ.", ephemeral=True); return
+
+        # ─── Số lần ───
+        try:
+            so_lan = int(str(self.f_so_lan.value).strip() or "1")
+        except ValueError:
+            so_lan = 1
+
+        # ─── Delay ───
+        try:
+            delay = float(str(self.f_delay.value).strip() or "3")
+        except ValueError:
+            delay = 3.0
+        if delay < 3.0: delay = 3.0
+
+        # ─── Nội dung: tách dòng ───
+        raw = str(self.f_content.value)
+        content_clean = raw.replace("\\n", "\n")
+        if "\n" in content_clean:
+            lines = [l.rstrip() for l in content_clean.split("\n") if l.strip()]
+        elif "|" in content_clean:
+            lines = [l.strip() for l in content_clean.split("|") if l.strip()]
+        else:
+            lines = [content_clean.strip()]
+
+        if not lines:
+            await interaction.response.send_message("❌ Nội dung rỗng.", ephemeral=True); return
+
+        # ─── Tag user ───
+        tag_suffix = ""
+        user_raw = str(self.f_user.value).strip()
+        if user_raw:
+            m = re.fullmatch(r"<@!?(\d+)>", user_raw) or re.fullmatch(r"(\d{17,20})", user_raw)
+            if m:
+                tag_suffix = f" <@{m.group(1)}>"
+
+        # ═══════════════════════════════════════════════════════
+        #  🆕 SMART CHECK: tổng ký tự
+        # ═══════════════════════════════════════════════════════
+        total_chars = sum(len(l) for l in lines)
+        total_lines = len(lines)
+        warnings = []
+
+        if total_lines > 100:
+            warnings.append(f"⚠️ Có **{total_lines} dòng** — nhiều, dễ bị rate limit")
+        if total_chars > MODAL_SOFT_LIMIT:
+            warnings.append(f"⚠️ Tổng **{total_chars} ký tự** — gần sát giới hạn 4000")
+        long_lines = [i+1 for i, l in enumerate(lines) if len(l) > DISCORD_MSG_MAX]
+        if long_lines:
+            warnings.append(
+                f"⚠️ Dòng {long_lines[:5]}{'...' if len(long_lines)>5 else ''} > 2000 ký tự — sẽ tự tách thành nhiều tin")
+
+        # ═══════════════════════════════════════════════════════
+        #  🆕 Nếu tổng > MODAL_HARD_LIMIT → tự lưu vào NGÔN/ + hướng dẫn /treongon
+        # ═══════════════════════════════════════════════════════
+        if total_chars > MODAL_HARD_LIMIT:
+            NGON_DIR.mkdir(exist_ok=True)
+            fname = f"auto_{int(time.time())}.txt"
+            fpath = NGON_DIR / fname
+            try:
+                with open(fpath, "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+                log.info(f"[SMART-MODAL] Auto-save {total_chars} ký tự → NGÔN/{fname}")
+                await interaction.response.send_message(
+                    f"⚠️ Nội dung có **{total_chars} ký tự** ({total_lines} dòng) — vượt giới hạn 4000 ký tự của Modal.\n\n"
+                    f"✅ **Đã tự động lưu** vào: `NGÔN/{fname}`\n\n"
+                    f"👉 **Bước tiếp theo** — dùng lệnh sau để spam (KHÔNG giới hạn):\n"
+                    f"```\n/treongon delay:{int(delay)} channel_id:{cid} server_id:0 tokens:{tok_list[0][:20]}... so_lan:{so_lan} nguon:{fname}```\n"
+                    f"*(Dán token đầy đủ vào ô `tokens` — chỉ hiện 20 ký tự đầu để bảo mật)*",
+                    ephemeral=True)
+                asyncio.create_task(report(interaction.user, interaction.guild, interaction.channel,
+                    f"/spamlinksever (auto-save) {fname}",
+                    f"Channel: `{cid}` | Chars: `{total_chars}` | Lines: `{total_lines}` | Loops: `{so_lan}` | Saved: `NGÔN/{fname}`"))
+                return
+            except Exception as e:
+                log.error(f"[SMART-MODAL] Save file failed: {e}")
+                await interaction.response.send_message(
+                    f"❌ Nội dung quá dài ({total_chars} ký tự) và không lưu được file: {e}\n"
+                    f"👉 Thử chia nhỏ thành 2-3 lần hoặc dùng `/treongon` với file tự tạo.",
+                    ephemeral=True)
+                return
+
+        # ═══════════════════════════════════════════════════════
+        #  Nội dung OK → chạy spam
+        # ═══════════════════════════════════════════════════════
+        stop = register_stop()
+
+        async def _token_loop(tok):
+            loop_count = 0
+            while not stop.is_set():
+                if so_lan > 0 and loop_count >= so_lan: return
+                for line in lines:
+                    if stop.is_set(): return
+                    final = line
+                    if tag_suffix and not line.rstrip().endswith(">"):
+                        final = f"{line}{tag_suffix}"
+
+                    # 🆕 Tự tách dòng dài > 1990 ký tự
+                    if len(final) > DISCORD_MSG_MAX:
+                        chunks = [final[i:i+DISCORD_MSG_MAX] for i in range(0, len(final), DISCORD_MSG_MAX)]
+                        for chunk in chunks:
+                            if stop.is_set(): return
+                            await send_token_message(tok, cid, sanitize(chunk))
+                    else:
+                        await send_token_message(tok, cid, sanitize(final))
+                loop_count += 1
+                if stop.is_set(): return
+                await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.05, 0.05)))
+
+        async def run_all():
+            tasks = [asyncio.create_task(_token_loop(tok)) for tok in tok_list]
+            try:
+                await asyncio.gather(*tasks)
+            except Exception as e:
+                log.error(f"spamlinksever: {e}")
+            finally:
+                unregister_stop(stop)
+
+        asyncio.create_task(run_all())
+
+        preview = " ⏎ ".join(lines[:3])[:150] + (" ..." if len(lines) > 3 else "")
+        tag_info = f" | Tag: {tag_suffix.strip()}" if tag_suffix else " | Không tag"
+        warn_text = ""
+        if warnings:
+            warn_text = "\n\n" + "\n".join(warnings)
+
+        await interaction.response.send_message(
+            f"🚀 **/spamlinksever**\n"
+            f"• Kênh: `{cid}` | Tokens: `{len(tok_list)}`\n"
+            f"• Lặp: `{so_lan if so_lan > 0 else '∞'}` | Delay: `{delay}s`\n"
+            f"• Số dòng: `{total_lines}` ({total_chars} ký tự) — gửi liên tiếp cùng lúc{tag_info}\n"
+            f"• Preview: `{preview}`{warn_text}",
+            ephemeral=True)
+
+        asyncio.create_task(report(interaction.user, interaction.guild, interaction.channel,
+            "/spamlinksever",
+            f"Channel: `{cid}` | Tokens: `{len(tok_list)}` | Loops: `{so_lan}` | "
+            f"Lines: `{total_lines}` | Chars: `{total_chars}` | Delay: `{delay}s`"))
+
+@bot.tree.command(name="spamlinksever", description="Smart Modal — paste multi-line (auto-save nếu > 4000 ký tự)")
+async def slash_spamlinksever(inter: discord.Interaction):
+    if not await slash_user_guard(inter): return
+    await inter.response.send_modal(SpamLinkSeverModal())
+
 @bot.tree.command(name="leave", description="Bot rời server (owner)")
 async def slash_leave(inter: discord.Interaction):
     if not await slash_owner_guard(inter): return
@@ -1133,7 +1314,6 @@ async def slash_xa(inter: discord.Interaction, tokens: str, channel_id: str, use
 #  PRESENCE HELPER
 # ══════════════════════════════════════════════════════════════
 async def apply_bot_presence():
-    """Áp dụng trạng thái + tên panel vào presence của bot."""
     try:
         status_str = get_panel_status()
         status_map = {
@@ -1143,10 +1323,7 @@ async def apply_bot_presence():
             "invisible": discord.Status.invisible,
         }
         status = status_map.get(status_str, discord.Status.online)
-        activity = discord.Activity(
-            type=discord.ActivityType.watching,
-            name=get_panel_name()
-        )
+        activity = discord.Activity(type=discord.ActivityType.watching, name=get_panel_name())
         await bot.change_presence(status=status, activity=activity)
         log.info(f"[PRESENCE] Đã set: status={status_str} | name={get_panel_name()}")
     except Exception as e:
@@ -1179,7 +1356,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .card-label{font-size:11px;color:#ff5555;text-transform:uppercase;letter-spacing:3px;margin-bottom:14px}
   .card-value{font-size:36px;font-weight:bold;color:#fff;text-shadow:0 0 10px rgba(255,0,0,.6);display:flex;align-items:center;gap:10px}
   .card-sub{font-size:11px;color:#666;margin-top:10px;letter-spacing:1px}
-  .card-value a{color:#00ff88;text-decoration:none;text-shadow:0 0 12px #00ff88;font-size:24px}
+  .card-value a{color:#00ff88;text-decoration:none;text-shadow:0 0 12px #00ff88;font-size:22px}
   .card-value a:hover{text-decoration:underline}
   .footer{margin-top:40px;color:#333;font-size:10px;letter-spacing:3px;text-align:center}
   .footer a{color:#ff0000;text-decoration:none}
@@ -1212,7 +1389,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="card-sub">nhấn để tham gia</div>
   </div>
 </div>
-<div class="footer">{{PANEL_NAME}} • v4.5 🛡️ • WebSocket Realtime<br>
+<div class="footer">{{PANEL_NAME}} • v4.7 🛡️ • WebSocket Realtime<br>
 <a href="/api/status">/api/status</a> • <a href="/health">/health</a> • /ws</div>
 <script>
 let ws, rt;
@@ -1351,7 +1528,7 @@ async def cleanup_rate_limit_store():
             dq = ip_request_log[ip]
             while dq and dq[0] < window_start: dq.popleft()
             if not dq: ip_request_log.pop(ip, None)
-        log.info(f"[CLEANUP] Đã dọn rate-limit store. Blocked còn: {len(ip_blocked_until)}")
+        log.info(f"[CLEANUP] Blocked còn: {len(ip_blocked_until)}")
 
 async def start_web_server():
     app = aioweb.Application(middlewares=[ddos_protection_middleware])
@@ -1379,7 +1556,6 @@ async def on_ready():
         synced = await bot.tree.sync()
         print(f"{Fore.CYAN}[{OWNER_NAME.upper()}] ✅ Synced {len(synced)} slash commands{Style.RESET_ALL}")
     except Exception as e: log.error(f"sync: {e}")
-    # Áp dụng presence từ panel.json
     await apply_bot_presence()
     ngon_list = [f.name for f in find_ngon_files()]
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
@@ -1392,6 +1568,7 @@ async def on_ready():
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🌐 Dashboard : http://0.0.0.0:{PORT}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🔗 Invite    : {INVITE_LINK}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🛡️ Anti-DDoS : ON ({RATE_LIMIT_MAX_REQ}req/{RATE_LIMIT_WINDOW}s){Style.RESET_ALL}")
+    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🧠 Smart Modal: ON (auto-save > {MODAL_HARD_LIMIT} chars){Style.RESET_ALL}")
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
 
 # ══════════════════════════════════════════════════════════════
