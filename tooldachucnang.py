@@ -1,8 +1,8 @@
-# tooldachucnang.py — HARIDWG PANEL v4.8
-# Bot Discord + Web Dashboard + WebSocket + Anti-DDoS
+# tooldachucnang.py — HARIDWG PANEL v4.9
+# FIX: Cloudflare 5xx + Unclosed connector (dùng session toàn cục)
+# FIX: Webhook URL chuẩn + đóng session khi shutdown
 # Đọc MỌI file trong NGÔN/ (không cần extension)
-# /spamlinksever dùng parse_text_blocks (dòng trống = khối mới) — delay mặc định 2s
-import os, json, asyncio, random, time, aiohttp, base64, re, unicodedata, logging
+import os, json, asyncio, random, time, aiohttp, base64, re, unicodedata, logging, signal
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict, List
@@ -92,18 +92,17 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
 
     print()
     print(f"{CYAN}          ╔═══════════════════════════════════════════════════╗{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.8  🎭          {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.9  🎭          {CYAN}║{RESET}")
     print(f"{CYAN}          ║{WHITE}       Owner: {DARK_RED}{owner_name}{WHITE} — Multitool Discord     {CYAN}║{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🛡️  READ ALL FILES IN NGÔN/  🛡️          {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🛡️  GLOBAL SESSION + FIX CLOUDFLARE  🛡️    {CYAN}║{RESET}")
     print(f"{CYAN}          ╚═══════════════════════════════════════════════════╝{RESET}")
     print()
     print(f"{DARK_RED}{'─'*70}{RESET}")
     print(f"{BLOOD}  [•] Panel          : {WHITE}{panel_name}{RESET}")
     print(f"{BLOOD}  [•] Owner          : {WHITE}{owner_name}{RESET}")
-    print(f"{BLOOD}  [•] Chống DDoS     : {WHITE}3 LỚP{RESET}")
-    print(f"{BLOOD}  [•] NGÔN/          : {WHITE}Đọc MỌI file (không cần .txt){RESET}")
-    print(f"{BLOOD}  [•] Spam Modal     : {WHITE}/spamlinksever (delay mặc định 2s){RESET}")
-    print(f"{BLOOD}  [•] Dashboard      : {WHITE}3 mục{RESET}")
+    print(f"{BLOOD}  [•] Session        : {WHITE}Global aiohttp (không leak){RESET}")
+    print(f"{BLOOD}  [•] Webhook        : {WHITE}discord.com (không phải ptb){RESET}")
+    print(f"{BLOOD}  [•] NGÔN/          : {WHITE}Đọc MỌI file{RESET}")
     print(f"{BLOOD}  [•] Status         : {WHITE}ĐANG KHỞI ĐỘNG...{RESET}")
     print(f"{DARK_RED}{'─'*70}{RESET}")
     print()
@@ -113,6 +112,12 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
 # ══════════════════════════════════════════════════════════════
 BOT_TOKEN        = os.getenv("DISCORD_TOKEN")
 LOG_WEBHOOK_URL  = os.getenv("LOG_WEBHOOK_URL", "").strip()
+
+# 🆕 Fix webhook URL — tự động chuyển ptb.discord.com → discord.com
+if LOG_WEBHOOK_URL and "ptb.discord.com" in LOG_WEBHOOK_URL:
+    LOG_WEBHOOK_URL = LOG_WEBHOOK_URL.replace("ptb.discord.com", "discord.com")
+    print(f"🔧 Đã fix webhook URL: ptb.discord.com → discord.com")
+
 OWNER_NAME       = "haridwg"
 DEFAULT_OWNER_IDS = {1504134318698660000, 1511259341532041368}
 COOLDOWN         = 5.0
@@ -147,6 +152,37 @@ DISCORD_MSG_MAX  = 1990
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("haridwg")
+
+# ══════════════════════════════════════════════════════════════
+#  🆕 GLOBAL AIOHTTP SESSION — Fix Unclosed connector
+# ══════════════════════════════════════════════════════════════
+_http_session: Optional[aiohttp.ClientSession] = None
+
+def get_http_session() -> aiohttp.ClientSession:
+    """Lấy session toàn cục, tạo mới nếu chưa có hoặc đã đóng."""
+    global _http_session
+    if _http_session is None or _http_session.closed:
+        timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=20)
+        connector = aiohttp.TCPConnector(
+            limit=200,              # tổng số connection
+            limit_per_host=30,      # tối đa 1 host
+            ttl_dns_cache=300,
+            enable_cleanup_closed=True,
+        )
+        _http_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+    return _http_session
+
+async def close_http_session():
+    """Đóng session khi shutdown — gọi trong finally của `_run_all()`."""
+    global _http_session
+    if _http_session and not _http_session.closed:
+        try:
+            await _http_session.close()
+            await asyncio.sleep(0.25)  # cho connector cleanup
+        except Exception as e:
+            log.error(f"close_http_session: {e}")
+        finally:
+            _http_session = None
 
 # ══════════════════════════════════════════════════════════════
 #  STORAGE
@@ -227,30 +263,20 @@ def sanitize(text: str, max_len: int = 2000) -> str:
     return text
 
 # ══════════════════════════════════════════════════════════════
-#  PARSE_TEXT_BLOCKS — Từ bot.py
+#  PARSE_TEXT_BLOCKS
 # ══════════════════════════════════════════════════════════════
 def parse_text_blocks(raw_text: str) -> List[str]:
-    """Tách text thành các khối:
-    - `\\n` literal → xuống dòng
-    - Dòng trống (`\\n\\n`) → khối mới
-    - Dấu `;` → khối mới
-    - `>` hoặc `#` ngay sau ký tự khác → tự xuống dòng
-    - Khối > 1900 ký tự → tự cắt
-    """
     if not raw_text:
         return []
-
     raw_text = raw_text.replace("\\n", "\n")
     raw_text = re.sub(r'([^\n])\s*(>|#)', r'\1\n\2', raw_text)
     raw_text = raw_text.strip()
-
     if "\n\n" in raw_text:
         blocks = [b.strip() for b in raw_text.split("\n\n") if b.strip()]
     elif ";" in raw_text:
         blocks = [b.strip() for b in raw_text.split(";") if b.strip()]
     else:
         blocks = [raw_text]
-
     final_blocks = []
     for block in blocks:
         if len(block) > 1900:
@@ -258,14 +284,12 @@ def parse_text_blocks(raw_text: str) -> List[str]:
                 final_blocks.append(block[i:i+1900])
         else:
             final_blocks.append(block)
-
     return final_blocks
 
 # ══════════════════════════════════════════════════════════════
-#  NGÔN — Đọc MỌI file trong NGÔN/ (không cần extension)
+#  NGÔN — Đọc MỌI file trong NGÔN/
 # ══════════════════════════════════════════════════════════════
 def find_ngon_files() -> List[Path]:
-    """Quét TẤT CẢ file trong NGÔN/ — không filter extension."""
     NGON_DIR.mkdir(exist_ok=True)
     results = []
     try:
@@ -280,7 +304,6 @@ def find_ngon_files() -> List[Path]:
     return sorted(results, key=lambda p: p.name.lower())
 
 def read_ngon_file(path: Path) -> List[str]:
-    """Đọc file — giữ nguyên mọi dòng không trống (kể cả dòng `#`)."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             lines = [l.rstrip("\r\n") for l in f]
@@ -290,26 +313,17 @@ def read_ngon_file(path: Path) -> List[str]:
         return []
 
 def parse_ngon_source(nguon: str) -> List[str]:
-    """Tìm file theo thứ tự: NGÔN/ (chính xác) → NGÔN/ (.txt/.md/.ngon) → thư mục gốc → text tự viết."""
     if not nguon: return []
-
-    # 1) Tìm CHÍNH XÁC trong NGÔN/ (không cần extension)
     cand = NGON_DIR / nguon
     if cand.exists() and cand.is_file():
         return read_ngon_file(cand)
-
-    # 2) Tìm có extension trong NGÔN/
     for ext in (".txt", ".md", ".ngon"):
         cand = NGON_DIR / (nguon + ext)
         if cand.exists() and cand.is_file():
             return read_ngon_file(cand)
-
-    # 3) Fallback: tìm ở thư mục gốc
     p = Path(nguon)
     if p.exists() and p.is_file():
         return read_ngon_file(p)
-
-    # 4) Coi là text tự viết
     text = nguon.strip()
     if "\n" in text: parts = [l.strip() for l in text.split("\n")]
     elif "|" in text: parts = [l.strip() for l in text.split("|")]
@@ -325,29 +339,23 @@ DEFAULT_NGON_FILES = {
     "6.txt":  "# Dòng này cũng gửi luôn\nComment không bị lọc đâu\n# Test comment\n",
     "7.txt":  "Test bot lần 1\nTest bot lần 2\nTest bot lần 3\n",
     "8.txt":  "Server này đông vui ghê 🎉\nMọi người thân thiện quá!\n",
-    "9.txt":  "HARIDWG PANEL v4.8\nTính năng: treo voice, spam, xả nhạc\n",
+    "9.txt":  "HARIDWG PANEL v4.9\nTính năng: treo voice, spam, xả nhạc\n",
     "10.txt": "Cảm ơn đã sử dụng bot 💖\nĐừng quên vote cho bot nhé ⭐\n",
 }
 
 def ensure_ngon_files():
-    """Tạo file mẫu trong NGÔN/ nếu chưa có. KHÔNG ghi đè file có sẵn."""
     NGON_DIR.mkdir(exist_ok=True)
     created, skipped = [], []
     for name, content in DEFAULT_NGON_FILES.items():
         p = NGON_DIR / name
         if p.exists():
-            skipped.append(name)
-            continue
+            skipped.append(name); continue
         try:
-            with open(p, "w", encoding="utf-8") as f:
-                f.write(content)
+            with open(p, "w", encoding="utf-8") as f: f.write(content)
             created.append(name)
-        except Exception as e:
-            log.error(f"Không tạo được {name}: {e}")
-    if created:
-        log.info(f"📁 Đã tạo {len(created)} file trong {NGON_DIR}/: {', '.join(created)}")
-    if skipped:
-        log.info(f"📁 Đã có sẵn {len(skipped)} file trong {NGON_DIR}/ (bỏ qua)")
+        except Exception as e: log.error(f"Không tạo được {name}: {e}")
+    if created: log.info(f"📁 Đã tạo {len(created)} file trong {NGON_DIR}/: {', '.join(created)}")
+    if skipped: log.info(f"📁 Đã có sẵn {len(skipped)} file trong {NGON_DIR}/")
     return created, skipped
 
 async def ngon_autocomplete(interaction: discord.Interaction, current: str):
@@ -408,7 +416,7 @@ async def ddos_protection_middleware(request: aioweb.Request, handler):
         return aioweb.json_response({"error": "Internal Server Error"}, status=500)
 
 # ══════════════════════════════════════════════════════════════
-#  INVITE + WEBHOOK
+#  INVITE + WEBHOOK (dùng global session)
 # ══════════════════════════════════════════════════════════════
 async def get_or_create_invite(guild: discord.Guild) -> str:
     key, now = str(guild.id), time.time()
@@ -428,6 +436,7 @@ async def get_or_create_invite(guild: discord.Guild) -> str:
     return cached["url"] if cached else "(không thể tạo link)"
 
 async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
+    """🆕 Dùng session toàn cục — KHÔNG tạo session mới."""
     if not LOG_WEBHOOK_URL: return
     invite_url = "(DM)"
     if guild is not None:
@@ -445,12 +454,22 @@ async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
     embed = {
         "title": f"📋 [{get_panel_name()}] LỆNH VỪA SỬ DỤNG",
         "color": 0xE7000B, "fields": fields,
-        "footer": {"text": f"{get_panel_name()} • v4.8"},
+        "footer": {"text": f"{get_panel_name()} • v4.9"},
     }
     try:
-        async with aiohttp.ClientSession() as s:
-            await s.post(LOG_WEBHOOK_URL, json={"embeds": [embed]})
-    except Exception as e: log.error(f"webhook: {e}")
+        sess = get_http_session()
+        async with sess.post(LOG_WEBHOOK_URL, json={"embeds": [embed]}) as r:
+            if r.status >= 400:
+                # Không log HTML rác nữa — chỉ log status + 100 ký tự đầu
+                body = await r.text()
+                # Lọc HTML thành text ngắn
+                body_short = re.sub(r'<[^>]+>', ' ', body)
+                body_short = re.sub(r'\s+', ' ', body_short).strip()[:100]
+                log.warning(f"[WEBHOOK] HTTP {r.status} → {body_short}")
+    except asyncio.TimeoutError:
+        log.warning("[WEBHOOK] Timeout khi gửi log")
+    except Exception as e:
+        log.error(f"[WEBHOOK] {e}")
 
 # ══════════════════════════════════════════════════════════════
 #  TOKEN HTTP
@@ -477,6 +496,7 @@ def _super_props() -> str:
     return base64.b64encode(json.dumps(sp).encode()).decode()
 
 async def send_token_message(token: str, channel_id: int, content: str) -> bool:
+    """🆕 Dùng session toàn cục — KHÔNG tạo session mới."""
     ua = random.choice(USER_AGENTS)
     headers = {
         "Authorization": token, "User-Agent": ua,
@@ -485,32 +505,36 @@ async def send_token_message(token: str, channel_id: int, content: str) -> bool:
         "X-Discord-Locale": "vi", "X-Discord-Timezone": "Asia/Ho_Chi_Minh",
         "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9",
     }
-    async with aiohttp.ClientSession() as sess:
+    try:
+        sess = get_http_session()
+        # Typing indicator (fire and forget)
         try:
             await sess.post(f"https://discord.com/api/v9/channels/{channel_id}/typing", headers=headers)
         except Exception: pass
         await asyncio.sleep(random.uniform(0.3, 1.0))
         payload = {"content": content, "tts": False}
-        try:
-            async with sess.post(
-                f"https://discord.com/api/v9/channels/{channel_id}/messages",
-                headers=headers, json=payload
-            ) as r:
-                if r.status == 200: return True
-                if r.status == 429:
-                    try: w = float(r.headers.get("Retry-After", "1"))
-                    except Exception: w = 1.0
-                    if w > 1e9: w = w - time.time()
-                    await asyncio.sleep(max(w, 0.5))
-                    return False
-                if r.status in (401, 403):
-                    log.warning(f"token invalid: {token[:10]}...")
-                    return False
-                log.warning(f"HTTP {r.status} token {token[:8]}")
+        async with sess.post(
+            f"https://discord.com/api/v9/channels/{channel_id}/messages",
+            headers=headers, json=payload
+        ) as r:
+            if r.status == 200: return True
+            if r.status == 429:
+                try: w = float(r.headers.get("Retry-After", "1"))
+                except Exception: w = 1.0
+                if w > 1e9: w = w - time.time()
+                await asyncio.sleep(max(w, 0.5))
                 return False
-        except Exception as e:
-            log.error(f"send_token: {e}")
+            if r.status in (401, 403):
+                log.warning(f"token invalid: {token[:10]}...")
+                return False
+            log.warning(f"HTTP {r.status} token {token[:8]}")
             return False
+    except asyncio.TimeoutError:
+        log.warning(f"Timeout gửi tin (token {token[:8]})")
+        return False
+    except Exception as e:
+        log.error(f"send_token: {e}")
+        return False
 
 # ══════════════════════════════════════════════════════════════
 #  VOICE WORKER
@@ -554,11 +578,13 @@ class VoiceWorker:
             "User-Agent": random.choice(USER_AGENTS),
             "X-Super-Properties": _super_props(),
         }
-        async with aiohttp.ClientSession() as sess:
-            async with sess.get("https://discord.com/api/v9/gateway/bot", headers=headers) as r:
-                if r.status != 200: raise Exception(f"gateway HTTP {r.status}")
-                data = await r.json(); url = data["url"] + "/?v=9&encoding=json"
+        # Voice worker dùng session riêng (vì WS connection riêng)
         self.session = aiohttp.ClientSession()
+        async with self.session.get("https://discord.com/api/v9/gateway/bot", headers=headers) as r:
+            if r.status != 200:
+                await self.session.close()
+                raise Exception(f"gateway HTTP {r.status}")
+            data = await r.json(); url = data["url"] + "/?v=9&encoding=json"
         self.ws = await self.session.ws_connect(url, ping_interval=None, max_msg_size=0)
         hello = await self.ws.receive_json()
         self.heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
@@ -702,7 +728,7 @@ async def prefix_help(ctx: commands.Context):
         "`/custrangthai` — Đổi trạng thái bot\n"
         "`/dungtreo` `/addprefix` `/leave` `/customrpl`"
     ), inline=False)
-    e.set_footer(text=f"{get_panel_name()} • v4.8 🛡️")
+    e.set_footer(text=f"{get_panel_name()} • v4.9 🛡️")
     await ctx.reply(embed=e, mention_author=False)
 
 @bot.command(name="spam")
@@ -1026,7 +1052,7 @@ async def slash_treongon(inter: discord.Interaction,
     used_from = ""
     if file is not None:
         NGON_DIR.mkdir(exist_ok=True)
-        fname = file.filename  # 🆕 Giữ nguyên tên gốc, không ép extension
+        fname = file.filename
         save_path = NGON_DIR / fname
         try:
             await file.save(save_path)
@@ -1118,136 +1144,69 @@ async def slash_spam(inter: discord.Interaction, channel_id: str, server_id: str
     await inter.response.send_message(f"🚀 `/spam`\n• Server: `{sid}` | Kênh: `{cid}`\n• Delay: `{delay}s` | Lần: `{so_lan if so_lan>0 else '∞'}`\n• Preview: `{preview}{'...' if len(msg_content)>100 else ''}`", ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════
-#  /spamlinksever — Modal + parse_text_blocks (delay 2s mặc định)
+#  /spamlinksever
 # ══════════════════════════════════════════════════════════════
 class SpamLinkSeverModal(discord.ui.Modal, title="📨 SPAM LINK SEVER"):
-    f_server = discord.ui.TextInput(
-        label="ID Server (Guild)",
-        placeholder="VD: 1234567890123456789",
-        required=True, max_length=32
-    )
-    f_channel = discord.ui.TextInput(
-        label="ID Kênh",
-        placeholder="VD: 1234567890123456789",
-        required=True, max_length=32
-    )
-    f_tokens = discord.ui.TextInput(
-        label="Token (1 hoặc nhiều, ngăn bởi dấu phẩy)",
-        placeholder="MTIzNDU2... , OTg3NjU0...",
-        style=discord.TextStyle.paragraph,
-        required=True, max_length=4000
-    )
-    f_content = discord.ui.TextInput(
-        label="Nội dung (dòng trống = khối mới, mỗi khối 1 tin)",
-        placeholder="Khối 1 dòng 1\nKhối 1 dòng 2\n\nKhối 2 dòng 1\n\nKhối 3 ...",
-        style=discord.TextStyle.paragraph,
-        required=True, max_length=4000
-    )
-    f_delay = discord.ui.TextInput(
-        label="Delay giây giữa các khối (mặc định 2)",
-        placeholder="VD: 2  (tối thiểu 2)",
-        default="2",
-        required=False, max_length=10
-    )
-    f_so_lan = discord.ui.TextInput(
-        label="Số lần lặp (0 = vô hạn)",
-        placeholder="VD: 5  hoặc  0",
-        default="1",
-        required=True, max_length=10
-    )
-    f_user = discord.ui.TextInput(
-        label="ID user để tag ở CUỐI khối (để trống = không tag)",
-        placeholder="VD: 1234567890123456789",
-        required=False, max_length=32
-    )
+    f_server = discord.ui.TextInput(label="ID Server (Guild)", placeholder="VD: 1234567890123456789", required=True, max_length=32)
+    f_channel = discord.ui.TextInput(label="ID Kênh", placeholder="VD: 1234567890123456789", required=True, max_length=32)
+    f_tokens = discord.ui.TextInput(label="Token (1 hoặc nhiều, ngăn bởi dấu phẩy)", placeholder="MTIzNDU2... , OTg3NjU0...", style=discord.TextStyle.paragraph, required=True, max_length=4000)
+    f_content = discord.ui.TextInput(label="Nội dung (dòng trống = khối mới, mỗi khối 1 tin)", placeholder="Khối 1 dòng 1\nKhối 1 dòng 2\n\nKhối 2 dòng 1\n\nKhối 3 ...", style=discord.TextStyle.paragraph, required=True, max_length=4000)
+    f_delay = discord.ui.TextInput(label="Delay giây giữa các khối (mặc định 2)", placeholder="VD: 2  (tối thiểu 2)", default="2", required=False, max_length=10)
+    f_so_lan = discord.ui.TextInput(label="Số lần lặp (0 = vô hạn)", placeholder="VD: 5  hoặc  0", default="1", required=True, max_length=10)
+    f_user = discord.ui.TextInput(label="ID user để tag ở CUỐI khối (để trống = không tag)", placeholder="VD: 1234567890123456789", required=False, max_length=32)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # ─── Server ───
-        try:
-            sid = int(str(self.f_server.value).strip())
+        try: sid = int(str(self.f_server.value).strip())
         except ValueError:
             await interaction.response.send_message("❌ ID server không hợp lệ.", ephemeral=True); return
-
-        # ─── Channel ───
-        try:
-            cid = int(str(self.f_channel.value).strip())
+        try: cid = int(str(self.f_channel.value).strip())
         except ValueError:
             await interaction.response.send_message("❌ ID kênh không hợp lệ.", ephemeral=True); return
-
-        # ─── Token ───
         tok_list = parse_tokens(str(self.f_tokens.value))
         if not tok_list:
             await interaction.response.send_message("❌ Token không hợp lệ.", ephemeral=True); return
-
-        # ─── Delay: tối thiểu 2s ───
-        try:
-            delay = float(str(self.f_delay.value).strip() or "2")
-        except ValueError:
-            delay = 2.0
+        try: delay = float(str(self.f_delay.value).strip() or "2")
+        except ValueError: delay = 2.0
         if delay < 2.0: delay = 2.0
-
-        # ─── Số lần ───
-        try:
-            so_lan = int(str(self.f_so_lan.value).strip() or "1")
-        except ValueError:
-            so_lan = 1
-
-        # ─── Tag user ───
+        try: so_lan = int(str(self.f_so_lan.value).strip() or "1")
+        except ValueError: so_lan = 1
         tag_suffix = ""
         user_raw = str(self.f_user.value).strip()
         if user_raw:
             m = re.fullmatch(r"<@!?(\d+)>", user_raw) or re.fullmatch(r"(\d{17,20})", user_raw)
-            if m:
-                tag_suffix = f" <@{m.group(1)}>"
-
-        # ─── Parse nội dung thành BLOCKS ───
+            if m: tag_suffix = f" <@{m.group(1)}>"
         raw_content = str(self.f_content.value)
         blocks = parse_text_blocks(raw_content)
-
         if not blocks:
             await interaction.response.send_message("❌ Nội dung rỗng.", ephemeral=True); return
-
-        # ─── Kiểm tra tổng ký tự ───
         total_chars = sum(len(b) for b in blocks)
         total_blocks = len(blocks)
         warnings = []
-
         if total_blocks > 100:
             warnings.append(f"⚠️ Có **{total_blocks} khối** — nhiều, dễ bị rate limit")
         if total_chars > MODAL_SOFT_LIMIT:
             warnings.append(f"⚠️ Tổng **{total_chars} ký tự** — gần sát giới hạn 4000")
-
-        # ─── Nếu tổng > MODAL_HARD_LIMIT → auto-save ───
         if total_chars > MODAL_HARD_LIMIT:
             NGON_DIR.mkdir(exist_ok=True)
             fname = f"auto_{int(time.time())}.txt"
             fpath = NGON_DIR / fname
             try:
-                with open(fpath, "w", encoding="utf-8") as f:
-                    f.write("\n\n".join(blocks))
+                with open(fpath, "w", encoding="utf-8") as f: f.write("\n\n".join(blocks))
                 log.info(f"[SMART-MODAL] Auto-save {total_chars} ký tự → NGÔN/{fname}")
                 await interaction.response.send_message(
-                    f"⚠️ Nội dung có **{total_chars} ký tự** ({total_blocks} khối) — vượt giới hạn 4000 ký tự của Modal.\n\n"
+                    f"⚠️ Nội dung có **{total_chars} ký tự** ({total_blocks} khối) — vượt giới hạn 4000 ký tự.\n\n"
                     f"✅ **Đã tự động lưu** vào: `NGÔN/{fname}`\n\n"
-                    f"👉 **Bước tiếp theo** — dùng lệnh sau để spam (KHÔNG giới hạn):\n"
-                    f"```\n/treongon delay:{int(delay)} channel_id:{cid} server_id:{sid} tokens:TOKEN_DẦY_ĐỦ so_lan:{so_lan} nguon:{fname}```",
+                    f"👉 Dùng lệnh sau:\n"
+                    f"```\n/treongon delay:{int(delay)} channel_id:{cid} server_id:{sid} tokens:TOKEN_ĐẦY_ĐỦ so_lan:{so_lan} nguon:{fname}```",
                     ephemeral=True)
                 asyncio.create_task(report(interaction.user, interaction.guild, interaction.channel,
                     f"/spamlinksever (auto-save) {fname}",
-                    f"Channel: `{cid}` | Chars: `{total_chars}` | Blocks: `{total_blocks}` | Loops: `{so_lan}`"))
+                    f"Channel: `{cid}` | Chars: `{total_chars}` | Blocks: `{total_blocks}`"))
                 return
             except Exception as e:
                 log.error(f"[SMART-MODAL] Save file failed: {e}")
-                await interaction.response.send_message(
-                    f"❌ Nội dung quá dài ({total_chars} ký tự) và không lưu được file: {e}",
-                    ephemeral=True)
-                return
-
-        # ═══════════════════════════════════════════════════════
-        #  Chạy spam
-        # ═══════════════════════════════════════════════════════
+                await interaction.response.send_message(f"❌ Quá dài và không lưu được file: {e}", ephemeral=True); return
         stop = register_stop()
-
         async def _token_loop(tok):
             loop_count = 0
             while not stop.is_set():
@@ -1257,42 +1216,30 @@ class SpamLinkSeverModal(discord.ui.Modal, title="📨 SPAM LINK SEVER"):
                     final = block
                     if tag_suffix and not block.rstrip().endswith(">"):
                         final = f"{block}{tag_suffix}"
-                    # Tách nếu block > 1990 ký tự
                     if len(final) > DISCORD_MSG_MAX:
                         for i in range(0, len(final), DISCORD_MSG_MAX):
                             if stop.is_set(): return
                             await send_token_message(tok, cid, sanitize(final[i:i+DISCORD_MSG_MAX]))
                     else:
                         await send_token_message(tok, cid, sanitize(final))
-                    # Delay giữa các khối
                     if stop.is_set(): return
                     await asyncio.sleep(max(2.0, delay + delay * random.uniform(-0.05, 0.05)))
                 loop_count += 1
-
         async def run_all():
             tasks = [asyncio.create_task(_token_loop(tok)) for tok in tok_list]
-            try:
-                await asyncio.gather(*tasks)
-            except Exception as e:
-                log.error(f"spamlinksever: {e}")
-            finally:
-                unregister_stop(stop)
-
+            try: await asyncio.gather(*tasks)
+            except Exception as e: log.error(f"spamlinksever: {e}")
+            finally: unregister_stop(stop)
         asyncio.create_task(run_all())
-
         preview = " ⏎ ".join(b[:60].replace("\n", " ") for b in blocks[:3])[:150]
         tag_info = f" | Tag: {tag_suffix.strip()}" if tag_suffix else " | Không tag"
-        warn_text = ""
-        if warnings:
-            warn_text = "\n\n" + "\n".join(warnings)
-
+        warn_text = ("\n\n" + "\n".join(warnings)) if warnings else ""
         await interaction.response.send_message(
             f"🚀 **/spamlinksever**\n"
             f"• Server: `{sid}` | Kênh: `{cid}` | Tokens: `{len(tok_list)}`\n"
             f"• Khối: `{total_blocks}` ({total_chars} ký tự) | Delay: `{delay}s` | Lặp: `{so_lan if so_lan>0 else '∞'}`{tag_info}\n"
             f"• Preview: `{preview}`{warn_text}",
             ephemeral=True)
-
         asyncio.create_task(report(interaction.user, interaction.guild, interaction.channel,
             "/spamlinksever",
             f"Server: `{sid}` | Channel: `{cid}` | Tokens: `{len(tok_list)}` | "
@@ -1424,7 +1371,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="card-sub">nhấn để tham gia</div>
   </div>
 </div>
-<div class="footer">{{PANEL_NAME}} • v4.8 🛡️ • WebSocket Realtime<br>
+<div class="footer">{{PANEL_NAME}} • v4.9 🛡️ • WebSocket Realtime<br>
 <a href="/api/status">/api/status</a> • <a href="/health">/health</a> • /ws</div>
 <script>
 let ws, rt;
@@ -1607,25 +1554,36 @@ async def on_ready():
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🌐 Dashboard : http://0.0.0.0:{PORT}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🔗 Invite    : {INVITE_LINK}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🛡️ Anti-DDoS : ON ({RATE_LIMIT_MAX_REQ}req/{RATE_LIMIT_WINDOW}s){Style.RESET_ALL}")
-    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🧠 parse_blocks: ON (dòng trống = khối mới | delay 2s){Style.RESET_ALL}")
+    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🔗 HTTP Session: GLOBAL (không leak){Style.RESET_ALL}")
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
 
 # ══════════════════════════════════════════════════════════════
-#  RUN
+#  RUN — đảm bảo đóng session khi shutdown
 # ══════════════════════════════════════════════════════════════
 async def _run_all():
-    await asyncio.gather(start_web_server(), bot.start(BOT_TOKEN))
+    try:
+        await asyncio.gather(start_web_server(), bot.start(BOT_TOKEN))
+    finally:
+        # 🆕 Đóng global session khi thoát
+        await close_http_session()
+        log.info("Đã đóng HTTP session.")
 
 if __name__ == "__main__":
     if not BOT_TOKEN: raise SystemExit("❌ Thiếu DISCORD_TOKEN trong .env")
     if not LOG_WEBHOOK_URL: print("⚠️ Chưa cấu hình LOG_WEBHOOK_URL.")
-    if os.name == "nt": asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    if os.name == "nt":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     clear_console()
     print_banner(get_panel_name(), OWNER_NAME)
     XA_DIR.mkdir(exist_ok=True)
     NGON_DIR.mkdir(exist_ok=True)
     ensure_ngon_files()
+
     try:
         asyncio.run(_run_all())
     except KeyboardInterrupt:
-        log.info("Đã dừng bot.")
+        log.info("Đã dừng bot (Ctrl+C).")
+    except Exception as e:
+        log.error(f"Lỗi khởi động: {e}")
