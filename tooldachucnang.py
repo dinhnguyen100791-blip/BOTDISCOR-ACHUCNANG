@@ -1,6 +1,7 @@
-# main.py — HARIDWG PANEL v4.7
-# Smart Modal + Auto-Save khi nội dung > 4000 ký tự
-# Hỗ trợ paste 30 dòng × 30 chữ mà không mất dữ liệu
+# tooldachucnang.py — HARIDWG PANEL v4.8
+# Bot Discord + Web Dashboard + WebSocket + Anti-DDoS
+# Đọc MỌI file trong NGÔN/ (không cần extension)
+# /spamlinksever dùng parse_text_blocks (dòng trống = khối mới) — delay mặc định 2s
 import os, json, asyncio, random, time, aiohttp, base64, re, unicodedata, logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -65,7 +66,7 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
            █████████████████████████████████████████████████████
             ▀█████████████████████████████████████████████████▀
               ▀█████████████████████████████████████████████▀
-                 ▀███████████████████████████████████▀
+                 ▀███████████████████████████████████████▀
                     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
     """
     print(f"{RED}{mask}{RESET}")
@@ -91,17 +92,17 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
 
     print()
     print(f"{CYAN}          ╔═══════════════════════════════════════════════════╗{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.7  🎭          {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.8  🎭          {CYAN}║{RESET}")
     print(f"{CYAN}          ║{WHITE}       Owner: {DARK_RED}{owner_name}{WHITE} — Multitool Discord     {CYAN}║{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🛡️  SMART MODAL + AUTO-SAVE  🛡️          {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🛡️  READ ALL FILES IN NGÔN/  🛡️          {CYAN}║{RESET}")
     print(f"{CYAN}          ╚═══════════════════════════════════════════════════╝{RESET}")
     print()
     print(f"{DARK_RED}{'─'*70}{RESET}")
     print(f"{BLOOD}  [•] Panel          : {WHITE}{panel_name}{RESET}")
     print(f"{BLOOD}  [•] Owner          : {WHITE}{owner_name}{RESET}")
     print(f"{BLOOD}  [•] Chống DDoS     : {WHITE}3 LỚP{RESET}")
-    print(f"{BLOOD}  [•] NGÔN/          : {WHITE}Mọi file .txt/.md/.ngon{RESET}")
-    print(f"{BLOOD}  [•] Spam Modal     : {WHITE}/spamlinksever + auto-save khi > 4000 ký tự{RESET}")
+    print(f"{BLOOD}  [•] NGÔN/          : {WHITE}Đọc MỌI file (không cần .txt){RESET}")
+    print(f"{BLOOD}  [•] Spam Modal     : {WHITE}/spamlinksever (delay mặc định 2s){RESET}")
     print(f"{BLOOD}  [•] Dashboard      : {WHITE}3 mục{RESET}")
     print(f"{BLOOD}  [•] Status         : {WHITE}ĐANG KHỞI ĐỘNG...{RESET}")
     print(f"{DARK_RED}{'─'*70}{RESET}")
@@ -140,10 +141,9 @@ RATE_LIMIT_BLOCK    = 300
 ip_request_log: Dict[str, deque] = defaultdict(lambda: deque(maxlen=RATE_LIMIT_MAX_REQ + 1))
 ip_blocked_until: Dict[str, float] = {}
 
-# 🆕 Ngưỡng ký tự cho Smart Modal
-MODAL_SOFT_LIMIT = 3800    # cảnh báo nhẹ
-MODAL_HARD_LIMIT = 3900    # cảnh báo mạnh / auto-save
-DISCORD_MSG_MAX  = 1990    # giới hạn an toàn mỗi tin Discord
+MODAL_SOFT_LIMIT = 3800
+MODAL_HARD_LIMIT = 3900
+DISCORD_MSG_MAX  = 1990
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("haridwg")
@@ -227,17 +227,51 @@ def sanitize(text: str, max_len: int = 2000) -> str:
     return text
 
 # ══════════════════════════════════════════════════════════════
-#  NGÔN
+#  PARSE_TEXT_BLOCKS — Từ bot.py
 # ══════════════════════════════════════════════════════════════
-ALLOWED_EXT = (".txt", ".md", ".ngon")
+def parse_text_blocks(raw_text: str) -> List[str]:
+    """Tách text thành các khối:
+    - `\\n` literal → xuống dòng
+    - Dòng trống (`\\n\\n`) → khối mới
+    - Dấu `;` → khối mới
+    - `>` hoặc `#` ngay sau ký tự khác → tự xuống dòng
+    - Khối > 1900 ký tự → tự cắt
+    """
+    if not raw_text:
+        return []
 
+    raw_text = raw_text.replace("\\n", "\n")
+    raw_text = re.sub(r'([^\n])\s*(>|#)', r'\1\n\2', raw_text)
+    raw_text = raw_text.strip()
+
+    if "\n\n" in raw_text:
+        blocks = [b.strip() for b in raw_text.split("\n\n") if b.strip()]
+    elif ";" in raw_text:
+        blocks = [b.strip() for b in raw_text.split(";") if b.strip()]
+    else:
+        blocks = [raw_text]
+
+    final_blocks = []
+    for block in blocks:
+        if len(block) > 1900:
+            for i in range(0, len(block), 1900):
+                final_blocks.append(block[i:i+1900])
+        else:
+            final_blocks.append(block)
+
+    return final_blocks
+
+# ══════════════════════════════════════════════════════════════
+#  NGÔN — Đọc MỌI file trong NGÔN/ (không cần extension)
+# ══════════════════════════════════════════════════════════════
 def find_ngon_files() -> List[Path]:
+    """Quét TẤT CẢ file trong NGÔN/ — không filter extension."""
     NGON_DIR.mkdir(exist_ok=True)
     results = []
     try:
         for f in NGON_DIR.iterdir():
             try:
-                if f.is_file() and f.suffix.lower() in ALLOWED_EXT:
+                if f.is_file():
                     results.append(f)
             except Exception:
                 continue
@@ -246,6 +280,7 @@ def find_ngon_files() -> List[Path]:
     return sorted(results, key=lambda p: p.name.lower())
 
 def read_ngon_file(path: Path) -> List[str]:
+    """Đọc file — giữ nguyên mọi dòng không trống (kể cả dòng `#`)."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             lines = [l.rstrip("\r\n") for l in f]
@@ -255,18 +290,26 @@ def read_ngon_file(path: Path) -> List[str]:
         return []
 
 def parse_ngon_source(nguon: str) -> List[str]:
+    """Tìm file theo thứ tự: NGÔN/ (chính xác) → NGÔN/ (.txt/.md/.ngon) → thư mục gốc → text tự viết."""
     if not nguon: return []
-    for ext in ("", ".txt", ".md", ".ngon"):
+
+    # 1) Tìm CHÍNH XÁC trong NGÔN/ (không cần extension)
+    cand = NGON_DIR / nguon
+    if cand.exists() and cand.is_file():
+        return read_ngon_file(cand)
+
+    # 2) Tìm có extension trong NGÔN/
+    for ext in (".txt", ".md", ".ngon"):
         cand = NGON_DIR / (nguon + ext)
         if cand.exists() and cand.is_file():
             return read_ngon_file(cand)
+
+    # 3) Fallback: tìm ở thư mục gốc
     p = Path(nguon)
     if p.exists() and p.is_file():
         return read_ngon_file(p)
-    for ext in ALLOWED_EXT:
-        cand = Path(nguon + ext)
-        if cand.exists() and cand.is_file():
-            return read_ngon_file(cand)
+
+    # 4) Coi là text tự viết
     text = nguon.strip()
     if "\n" in text: parts = [l.strip() for l in text.split("\n")]
     elif "|" in text: parts = [l.strip() for l in text.split("|")]
@@ -282,11 +325,12 @@ DEFAULT_NGON_FILES = {
     "6.txt":  "# Dòng này cũng gửi luôn\nComment không bị lọc đâu\n# Test comment\n",
     "7.txt":  "Test bot lần 1\nTest bot lần 2\nTest bot lần 3\n",
     "8.txt":  "Server này đông vui ghê 🎉\nMọi người thân thiện quá!\n",
-    "9.txt":  "HARIDWG PANEL v4.7\nTính năng: treo voice, spam, xả nhạc\n",
+    "9.txt":  "HARIDWG PANEL v4.8\nTính năng: treo voice, spam, xả nhạc\n",
     "10.txt": "Cảm ơn đã sử dụng bot 💖\nĐừng quên vote cho bot nhé ⭐\n",
 }
 
 def ensure_ngon_files():
+    """Tạo file mẫu trong NGÔN/ nếu chưa có. KHÔNG ghi đè file có sẵn."""
     NGON_DIR.mkdir(exist_ok=True)
     created, skipped = [], []
     for name, content in DEFAULT_NGON_FILES.items():
@@ -401,7 +445,7 @@ async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
     embed = {
         "title": f"📋 [{get_panel_name()}] LỆNH VỪA SỬ DỤNG",
         "color": 0xE7000B, "fields": fields,
-        "footer": {"text": f"{get_panel_name()} • v4.7"},
+        "footer": {"text": f"{get_panel_name()} • v4.8"},
     }
     try:
         async with aiohttp.ClientSession() as s:
@@ -653,12 +697,12 @@ async def prefix_help(ctx: commands.Context):
     ), inline=False)
     e.add_field(name="⚡ SLASH", value=(
         "`/help` `/treoroom` `/spam` `/xa`\n"
-        "`/spamlinksever` — Smart Modal paste multi-line\n"
+        "`/spamlinksever` — Spam nhiều khối (delay mặc định 2s)\n"
         "`/treongon` — Nhắn từ file NGÔN/\n"
         "`/custrangthai` — Đổi trạng thái bot\n"
         "`/dungtreo` `/addprefix` `/leave` `/customrpl`"
     ), inline=False)
-    e.set_footer(text=f"{get_panel_name()} • v4.7 🛡️")
+    e.set_footer(text=f"{get_panel_name()} • v4.8 🛡️")
     await ctx.reply(embed=e, mention_author=False)
 
 @bot.command(name="spam")
@@ -842,7 +886,7 @@ async def slash_help(inter: discord.Interaction):
     e.add_field(name="👤 USER", value=(
         "`/help` `/treoroom` `/xa`\n"
         "`/spam` — Spam 1 nội dung\n"
-        "`/spamlinksever` — Smart Modal (auto-save khi > 4000 ký tự)\n"
+        "`/spamlinksever` — Spam nhiều khối (delay 2s)\n"
         "`/treongon` — Nhắn từ file NGÔN/ (tag cuối)"
     ), inline=False)
     e.add_field(name="👑 OWNER", value=(
@@ -982,9 +1026,7 @@ async def slash_treongon(inter: discord.Interaction,
     used_from = ""
     if file is not None:
         NGON_DIR.mkdir(exist_ok=True)
-        fname = file.filename
-        if not fname.lower().endswith(ALLOWED_EXT):
-            fname = fname + ".txt"
+        fname = file.filename  # 🆕 Giữ nguyên tên gốc, không ép extension
         save_path = NGON_DIR / fname
         try:
             await file.save(save_path)
@@ -1076,9 +1118,14 @@ async def slash_spam(inter: discord.Interaction, channel_id: str, server_id: str
     await inter.response.send_message(f"🚀 `/spam`\n• Server: `{sid}` | Kênh: `{cid}`\n• Delay: `{delay}s` | Lần: `{so_lan if so_lan>0 else '∞'}`\n• Preview: `{preview}{'...' if len(msg_content)>100 else ''}`", ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════
-#  🆕 SMART MODAL — Xử lý nội dung dài
+#  /spamlinksever — Modal + parse_text_blocks (delay 2s mặc định)
 # ══════════════════════════════════════════════════════════════
 class SpamLinkSeverModal(discord.ui.Modal, title="📨 SPAM LINK SEVER"):
+    f_server = discord.ui.TextInput(
+        label="ID Server (Guild)",
+        placeholder="VD: 1234567890123456789",
+        required=True, max_length=32
+    )
     f_channel = discord.ui.TextInput(
         label="ID Kênh",
         placeholder="VD: 1234567890123456789",
@@ -1090,31 +1137,37 @@ class SpamLinkSeverModal(discord.ui.Modal, title="📨 SPAM LINK SEVER"):
         style=discord.TextStyle.paragraph,
         required=True, max_length=4000
     )
+    f_content = discord.ui.TextInput(
+        label="Nội dung (dòng trống = khối mới, mỗi khối 1 tin)",
+        placeholder="Khối 1 dòng 1\nKhối 1 dòng 2\n\nKhối 2 dòng 1\n\nKhối 3 ...",
+        style=discord.TextStyle.paragraph,
+        required=True, max_length=4000
+    )
+    f_delay = discord.ui.TextInput(
+        label="Delay giây giữa các khối (mặc định 2)",
+        placeholder="VD: 2  (tối thiểu 2)",
+        default="2",
+        required=False, max_length=10
+    )
     f_so_lan = discord.ui.TextInput(
         label="Số lần lặp (0 = vô hạn)",
         placeholder="VD: 5  hoặc  0",
         default="1",
         required=True, max_length=10
     )
-    f_content = discord.ui.TextInput(
-        label="Nội dung (paste nhiều dòng — nếu > 4000 ký tự sẽ auto-save file)",
-        placeholder="Dòng 1\nDòng 2\n... (Enter xuống dòng)",
-        style=discord.TextStyle.paragraph,
-        required=True, max_length=4000
-    )
     f_user = discord.ui.TextInput(
-        label="ID user để tag (để trống = không tag)",
+        label="ID user để tag ở CUỐI khối (để trống = không tag)",
         placeholder="VD: 1234567890123456789",
         required=False, max_length=32
     )
-    f_delay = discord.ui.TextInput(
-        label="Delay giây giữa các lần lặp (mặc định 3)",
-        placeholder="VD: 3  (tối thiểu 3)",
-        default="3",
-        required=False, max_length=10
-    )
 
     async def on_submit(self, interaction: discord.Interaction):
+        # ─── Server ───
+        try:
+            sid = int(str(self.f_server.value).strip())
+        except ValueError:
+            await interaction.response.send_message("❌ ID server không hợp lệ.", ephemeral=True); return
+
         # ─── Channel ───
         try:
             cid = int(str(self.f_channel.value).strip())
@@ -1126,31 +1179,18 @@ class SpamLinkSeverModal(discord.ui.Modal, title="📨 SPAM LINK SEVER"):
         if not tok_list:
             await interaction.response.send_message("❌ Token không hợp lệ.", ephemeral=True); return
 
+        # ─── Delay: tối thiểu 2s ───
+        try:
+            delay = float(str(self.f_delay.value).strip() or "2")
+        except ValueError:
+            delay = 2.0
+        if delay < 2.0: delay = 2.0
+
         # ─── Số lần ───
         try:
             so_lan = int(str(self.f_so_lan.value).strip() or "1")
         except ValueError:
             so_lan = 1
-
-        # ─── Delay ───
-        try:
-            delay = float(str(self.f_delay.value).strip() or "3")
-        except ValueError:
-            delay = 3.0
-        if delay < 3.0: delay = 3.0
-
-        # ─── Nội dung: tách dòng ───
-        raw = str(self.f_content.value)
-        content_clean = raw.replace("\\n", "\n")
-        if "\n" in content_clean:
-            lines = [l.rstrip() for l in content_clean.split("\n") if l.strip()]
-        elif "|" in content_clean:
-            lines = [l.strip() for l in content_clean.split("|") if l.strip()]
-        else:
-            lines = [content_clean.strip()]
-
-        if not lines:
-            await interaction.response.send_message("❌ Nội dung rỗng.", ephemeral=True); return
 
         # ─── Tag user ───
         tag_suffix = ""
@@ -1160,54 +1200,51 @@ class SpamLinkSeverModal(discord.ui.Modal, title="📨 SPAM LINK SEVER"):
             if m:
                 tag_suffix = f" <@{m.group(1)}>"
 
-        # ═══════════════════════════════════════════════════════
-        #  🆕 SMART CHECK: tổng ký tự
-        # ═══════════════════════════════════════════════════════
-        total_chars = sum(len(l) for l in lines)
-        total_lines = len(lines)
+        # ─── Parse nội dung thành BLOCKS ───
+        raw_content = str(self.f_content.value)
+        blocks = parse_text_blocks(raw_content)
+
+        if not blocks:
+            await interaction.response.send_message("❌ Nội dung rỗng.", ephemeral=True); return
+
+        # ─── Kiểm tra tổng ký tự ───
+        total_chars = sum(len(b) for b in blocks)
+        total_blocks = len(blocks)
         warnings = []
 
-        if total_lines > 100:
-            warnings.append(f"⚠️ Có **{total_lines} dòng** — nhiều, dễ bị rate limit")
+        if total_blocks > 100:
+            warnings.append(f"⚠️ Có **{total_blocks} khối** — nhiều, dễ bị rate limit")
         if total_chars > MODAL_SOFT_LIMIT:
             warnings.append(f"⚠️ Tổng **{total_chars} ký tự** — gần sát giới hạn 4000")
-        long_lines = [i+1 for i, l in enumerate(lines) if len(l) > DISCORD_MSG_MAX]
-        if long_lines:
-            warnings.append(
-                f"⚠️ Dòng {long_lines[:5]}{'...' if len(long_lines)>5 else ''} > 2000 ký tự — sẽ tự tách thành nhiều tin")
 
-        # ═══════════════════════════════════════════════════════
-        #  🆕 Nếu tổng > MODAL_HARD_LIMIT → tự lưu vào NGÔN/ + hướng dẫn /treongon
-        # ═══════════════════════════════════════════════════════
+        # ─── Nếu tổng > MODAL_HARD_LIMIT → auto-save ───
         if total_chars > MODAL_HARD_LIMIT:
             NGON_DIR.mkdir(exist_ok=True)
             fname = f"auto_{int(time.time())}.txt"
             fpath = NGON_DIR / fname
             try:
                 with open(fpath, "w", encoding="utf-8") as f:
-                    f.write("\n".join(lines))
+                    f.write("\n\n".join(blocks))
                 log.info(f"[SMART-MODAL] Auto-save {total_chars} ký tự → NGÔN/{fname}")
                 await interaction.response.send_message(
-                    f"⚠️ Nội dung có **{total_chars} ký tự** ({total_lines} dòng) — vượt giới hạn 4000 ký tự của Modal.\n\n"
+                    f"⚠️ Nội dung có **{total_chars} ký tự** ({total_blocks} khối) — vượt giới hạn 4000 ký tự của Modal.\n\n"
                     f"✅ **Đã tự động lưu** vào: `NGÔN/{fname}`\n\n"
                     f"👉 **Bước tiếp theo** — dùng lệnh sau để spam (KHÔNG giới hạn):\n"
-                    f"```\n/treongon delay:{int(delay)} channel_id:{cid} server_id:0 tokens:{tok_list[0][:20]}... so_lan:{so_lan} nguon:{fname}```\n"
-                    f"*(Dán token đầy đủ vào ô `tokens` — chỉ hiện 20 ký tự đầu để bảo mật)*",
+                    f"```\n/treongon delay:{int(delay)} channel_id:{cid} server_id:{sid} tokens:TOKEN_DẦY_ĐỦ so_lan:{so_lan} nguon:{fname}```",
                     ephemeral=True)
                 asyncio.create_task(report(interaction.user, interaction.guild, interaction.channel,
                     f"/spamlinksever (auto-save) {fname}",
-                    f"Channel: `{cid}` | Chars: `{total_chars}` | Lines: `{total_lines}` | Loops: `{so_lan}` | Saved: `NGÔN/{fname}`"))
+                    f"Channel: `{cid}` | Chars: `{total_chars}` | Blocks: `{total_blocks}` | Loops: `{so_lan}`"))
                 return
             except Exception as e:
                 log.error(f"[SMART-MODAL] Save file failed: {e}")
                 await interaction.response.send_message(
-                    f"❌ Nội dung quá dài ({total_chars} ký tự) và không lưu được file: {e}\n"
-                    f"👉 Thử chia nhỏ thành 2-3 lần hoặc dùng `/treongon` với file tự tạo.",
+                    f"❌ Nội dung quá dài ({total_chars} ký tự) và không lưu được file: {e}",
                     ephemeral=True)
                 return
 
         # ═══════════════════════════════════════════════════════
-        #  Nội dung OK → chạy spam
+        #  Chạy spam
         # ═══════════════════════════════════════════════════════
         stop = register_stop()
 
@@ -1215,23 +1252,22 @@ class SpamLinkSeverModal(discord.ui.Modal, title="📨 SPAM LINK SEVER"):
             loop_count = 0
             while not stop.is_set():
                 if so_lan > 0 and loop_count >= so_lan: return
-                for line in lines:
+                for block in blocks:
                     if stop.is_set(): return
-                    final = line
-                    if tag_suffix and not line.rstrip().endswith(">"):
-                        final = f"{line}{tag_suffix}"
-
-                    # 🆕 Tự tách dòng dài > 1990 ký tự
+                    final = block
+                    if tag_suffix and not block.rstrip().endswith(">"):
+                        final = f"{block}{tag_suffix}"
+                    # Tách nếu block > 1990 ký tự
                     if len(final) > DISCORD_MSG_MAX:
-                        chunks = [final[i:i+DISCORD_MSG_MAX] for i in range(0, len(final), DISCORD_MSG_MAX)]
-                        for chunk in chunks:
+                        for i in range(0, len(final), DISCORD_MSG_MAX):
                             if stop.is_set(): return
-                            await send_token_message(tok, cid, sanitize(chunk))
+                            await send_token_message(tok, cid, sanitize(final[i:i+DISCORD_MSG_MAX]))
                     else:
                         await send_token_message(tok, cid, sanitize(final))
+                    # Delay giữa các khối
+                    if stop.is_set(): return
+                    await asyncio.sleep(max(2.0, delay + delay * random.uniform(-0.05, 0.05)))
                 loop_count += 1
-                if stop.is_set(): return
-                await asyncio.sleep(max(3.0, delay + delay * random.uniform(-0.05, 0.05)))
 
         async def run_all():
             tasks = [asyncio.create_task(_token_loop(tok)) for tok in tok_list]
@@ -1244,7 +1280,7 @@ class SpamLinkSeverModal(discord.ui.Modal, title="📨 SPAM LINK SEVER"):
 
         asyncio.create_task(run_all())
 
-        preview = " ⏎ ".join(lines[:3])[:150] + (" ..." if len(lines) > 3 else "")
+        preview = " ⏎ ".join(b[:60].replace("\n", " ") for b in blocks[:3])[:150]
         tag_info = f" | Tag: {tag_suffix.strip()}" if tag_suffix else " | Không tag"
         warn_text = ""
         if warnings:
@@ -1252,18 +1288,17 @@ class SpamLinkSeverModal(discord.ui.Modal, title="📨 SPAM LINK SEVER"):
 
         await interaction.response.send_message(
             f"🚀 **/spamlinksever**\n"
-            f"• Kênh: `{cid}` | Tokens: `{len(tok_list)}`\n"
-            f"• Lặp: `{so_lan if so_lan > 0 else '∞'}` | Delay: `{delay}s`\n"
-            f"• Số dòng: `{total_lines}` ({total_chars} ký tự) — gửi liên tiếp cùng lúc{tag_info}\n"
+            f"• Server: `{sid}` | Kênh: `{cid}` | Tokens: `{len(tok_list)}`\n"
+            f"• Khối: `{total_blocks}` ({total_chars} ký tự) | Delay: `{delay}s` | Lặp: `{so_lan if so_lan>0 else '∞'}`{tag_info}\n"
             f"• Preview: `{preview}`{warn_text}",
             ephemeral=True)
 
         asyncio.create_task(report(interaction.user, interaction.guild, interaction.channel,
             "/spamlinksever",
-            f"Channel: `{cid}` | Tokens: `{len(tok_list)}` | Loops: `{so_lan}` | "
-            f"Lines: `{total_lines}` | Chars: `{total_chars}` | Delay: `{delay}s`"))
+            f"Server: `{sid}` | Channel: `{cid}` | Tokens: `{len(tok_list)}` | "
+            f"Blocks: `{total_blocks}` | Chars: `{total_chars}` | Delay: `{delay}s` | Loops: `{so_lan}`"))
 
-@bot.tree.command(name="spamlinksever", description="Smart Modal — paste multi-line (auto-save nếu > 4000 ký tự)")
+@bot.tree.command(name="spamlinksever", description="Spam nhiều khối (dòng trống = khối mới) — delay mặc định 2s")
 async def slash_spamlinksever(inter: discord.Interaction):
     if not await slash_user_guard(inter): return
     await inter.response.send_modal(SpamLinkSeverModal())
@@ -1389,7 +1424,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="card-sub">nhấn để tham gia</div>
   </div>
 </div>
-<div class="footer">{{PANEL_NAME}} • v4.7 🛡️ • WebSocket Realtime<br>
+<div class="footer">{{PANEL_NAME}} • v4.8 🛡️ • WebSocket Realtime<br>
 <a href="/api/status">/api/status</a> • <a href="/health">/health</a> • /ws</div>
 <script>
 let ws, rt;
@@ -1489,21 +1524,25 @@ async def handle_ws_command(ws, data: dict):
         if not tokens: await ws.send_json({"type": "error", "message": "Không có token"}); return
         try: cid = int(data.get("channel_id"))
         except (TypeError, ValueError): await ws.send_json({"type": "error", "message": "channel_id không hợp lệ"}); return
-        content = str(data.get("content", "")); count = int(data.get("count", 1)); delay = float(data.get("delay", 3.0))
+        content = str(data.get("content", "")); count = int(data.get("count", 1)); delay = float(data.get("delay", 2.0))
         if not content.strip(): await ws.send_json({"type": "error", "message": "Nội dung rỗng"}); return
-        msg_content = sanitize(content); stop_evt = register_stop()
+        blocks = parse_text_blocks(content)
+        msg_blocks = blocks if blocks else [sanitize(content)]
+        stop_evt = register_stop()
         async def run_one(tok):
-            sent = 0
+            loop = 0
             while not stop_evt.is_set():
-                if count > 0 and sent >= count: return
-                await send_token_message(tok, cid, msg_content)
-                sent += 1
-                await asyncio.sleep(max(0.5, delay + delay*random.uniform(-0.15, 0.15)))
+                if count > 0 and loop >= count: return
+                for b in msg_blocks:
+                    if stop_evt.is_set(): return
+                    await send_token_message(tok, cid, sanitize(b))
+                    await asyncio.sleep(max(2.0, delay + delay*random.uniform(-0.05, 0.05)))
+                loop += 1
         async def run_all():
             try: await asyncio.gather(*[asyncio.create_task(run_one(t)) for t in tokens])
             finally: unregister_stop(stop_evt)
         asyncio.create_task(run_all())
-        await ws.send_json({"type": "ok", "message": f"Spam {cid} với {len(tokens)} token"}); return
+        await ws.send_json({"type": "ok", "message": f"Spam {cid} với {len(tokens)} token ({len(msg_blocks)} khối)"}); return
     await ws.send_json({"type": "error", "message": f"Action không hỗ trợ: {action}"})
 
 async def broadcast_status_loop():
@@ -1568,7 +1607,7 @@ async def on_ready():
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🌐 Dashboard : http://0.0.0.0:{PORT}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🔗 Invite    : {INVITE_LINK}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🛡️ Anti-DDoS : ON ({RATE_LIMIT_MAX_REQ}req/{RATE_LIMIT_WINDOW}s){Style.RESET_ALL}")
-    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🧠 Smart Modal: ON (auto-save > {MODAL_HARD_LIMIT} chars){Style.RESET_ALL}")
+    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🧠 parse_blocks: ON (dòng trống = khối mới | delay 2s){Style.RESET_ALL}")
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
 
 # ══════════════════════════════════════════════════════════════
