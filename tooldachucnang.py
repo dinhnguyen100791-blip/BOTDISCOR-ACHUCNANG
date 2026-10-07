@@ -1,8 +1,7 @@
-# tooldachucnang.py — HARIDWG PANEL v4.9
-# FIX: Cloudflare 5xx + Unclosed connector (dùng session toàn cục)
-# FIX: Webhook URL chuẩn + đóng session khi shutdown
-# Đọc MỌI file trong NGÔN/ (không cần extension)
-import os, json, asyncio, random, time, aiohttp, base64, re, unicodedata, logging, signal
+# tooldachucnang.py — HARIDWG PANEL v4.9.1
+# Cooldown 3s mọi lệnh (slash + prefix)
+# Retry backoff khi login Discord (fix Cloudflare 1015)
+import os, json, asyncio, random, time, aiohttp, base64, re, unicodedata, logging
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict, List
@@ -66,7 +65,7 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
            █████████████████████████████████████████████████████
             ▀█████████████████████████████████████████████████▀
               ▀█████████████████████████████████████████████▀
-                 ▀███████████████████████████████████████▀
+                 ▀███████████████████████████████████▀
                     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
     """
     print(f"{RED}{mask}{RESET}")
@@ -92,16 +91,16 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
 
     print()
     print(f"{CYAN}          ╔═══════════════════════════════════════════════════╗{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.9  🎭          {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.9.1  🎭          {CYAN}║{RESET}")
     print(f"{CYAN}          ║{WHITE}       Owner: {DARK_RED}{owner_name}{WHITE} — Multitool Discord     {CYAN}║{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🛡️  GLOBAL SESSION + FIX CLOUDFLARE  🛡️    {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🛡️  COOLDOWN 3s + RETRY LOGIN  🛡️         {CYAN}║{RESET}")
     print(f"{CYAN}          ╚═══════════════════════════════════════════════════╝{RESET}")
     print()
     print(f"{DARK_RED}{'─'*70}{RESET}")
     print(f"{BLOOD}  [•] Panel          : {WHITE}{panel_name}{RESET}")
     print(f"{BLOOD}  [•] Owner          : {WHITE}{owner_name}{RESET}")
-    print(f"{BLOOD}  [•] Session        : {WHITE}Global aiohttp (không leak){RESET}")
-    print(f"{BLOOD}  [•] Webhook        : {WHITE}discord.com (không phải ptb){RESET}")
+    print(f"{BLOOD}  [•] Cooldown       : {WHITE}3 giây / lệnh (chống spam){RESET}")
+    print(f"{BLOOD}  [•] Login retry    : {WHITE}5 lần, backoff 60s→300s{RESET}")
     print(f"{BLOOD}  [•] NGÔN/          : {WHITE}Đọc MỌI file{RESET}")
     print(f"{BLOOD}  [•] Status         : {WHITE}ĐANG KHỞI ĐỘNG...{RESET}")
     print(f"{DARK_RED}{'─'*70}{RESET}")
@@ -113,14 +112,17 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
 BOT_TOKEN        = os.getenv("DISCORD_TOKEN")
 LOG_WEBHOOK_URL  = os.getenv("LOG_WEBHOOK_URL", "").strip()
 
-# 🆕 Fix webhook URL — tự động chuyển ptb.discord.com → discord.com
+# Tự động chuyển ptb.discord.com → discord.com
 if LOG_WEBHOOK_URL and "ptb.discord.com" in LOG_WEBHOOK_URL:
     LOG_WEBHOOK_URL = LOG_WEBHOOK_URL.replace("ptb.discord.com", "discord.com")
     print(f"🔧 Đã fix webhook URL: ptb.discord.com → discord.com")
 
 OWNER_NAME       = "haridwg"
 DEFAULT_OWNER_IDS = {1504134318698660000, 1511259341532041368}
-COOLDOWN         = 5.0
+
+# 🆕 COOLDOWN 3 giây
+COOLDOWN         = 3.0
+
 DEFAULT_PREFIX   = "t?"
 PREFIX_FILE      = "prefixes.json"
 INVITE_FILE      = "invites.json"
@@ -154,18 +156,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("haridwg")
 
 # ══════════════════════════════════════════════════════════════
-#  🆕 GLOBAL AIOHTTP SESSION — Fix Unclosed connector
+#  GLOBAL AIOHTTP SESSION
 # ══════════════════════════════════════════════════════════════
 _http_session: Optional[aiohttp.ClientSession] = None
 
 def get_http_session() -> aiohttp.ClientSession:
-    """Lấy session toàn cục, tạo mới nếu chưa có hoặc đã đóng."""
     global _http_session
     if _http_session is None or _http_session.closed:
         timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=20)
         connector = aiohttp.TCPConnector(
-            limit=200,              # tổng số connection
-            limit_per_host=30,      # tối đa 1 host
+            limit=200,
+            limit_per_host=30,
             ttl_dns_cache=300,
             enable_cleanup_closed=True,
         )
@@ -173,12 +174,11 @@ def get_http_session() -> aiohttp.ClientSession:
     return _http_session
 
 async def close_http_session():
-    """Đóng session khi shutdown — gọi trong finally của `_run_all()`."""
     global _http_session
     if _http_session and not _http_session.closed:
         try:
             await _http_session.close()
-            await asyncio.sleep(0.25)  # cho connector cleanup
+            await asyncio.sleep(0.25)
         except Exception as e:
             log.error(f"close_http_session: {e}")
         finally:
@@ -217,7 +217,28 @@ def set_panel_status(status: str):
     panel_config["status"] = status
     _save(PANEL_FILE, panel_config)
 
+# ══════════════════════════════════════════════════════════════
+#  🆕 COOLDOWN SYSTEM — 3s / lệnh
+# ══════════════════════════════════════════════════════════════
 user_cooldowns: Dict[int, float] = {}
+
+def cd_left(uid: int) -> float:
+    """Kiểm tra cooldown. Trả về số giây còn lại (0 nếu OK, và tự update timestamp)."""
+    now = time.time()
+    last = user_cooldowns.get(uid, 0)
+    rem = COOLDOWN - (now - last)
+    if rem > 0:
+        return rem
+    user_cooldowns[uid] = now
+    return 0.0
+
+def cd_reset(uid: int):
+    """Reset cooldown cho user (dùng khi cần bypass)."""
+    user_cooldowns.pop(uid, None)
+
+# ══════════════════════════════════════════════════════════════
+#  VOICE / TASK REGISTRY
+# ══════════════════════════════════════════════════════════════
 active_voice_workers: List = []
 _active_stop_events: List[asyncio.Event] = []
 
@@ -287,7 +308,7 @@ def parse_text_blocks(raw_text: str) -> List[str]:
     return final_blocks
 
 # ══════════════════════════════════════════════════════════════
-#  NGÔN — Đọc MỌI file trong NGÔN/
+#  NGÔN
 # ══════════════════════════════════════════════════════════════
 def find_ngon_files() -> List[Path]:
     NGON_DIR.mkdir(exist_ok=True)
@@ -339,7 +360,7 @@ DEFAULT_NGON_FILES = {
     "6.txt":  "# Dòng này cũng gửi luôn\nComment không bị lọc đâu\n# Test comment\n",
     "7.txt":  "Test bot lần 1\nTest bot lần 2\nTest bot lần 3\n",
     "8.txt":  "Server này đông vui ghê 🎉\nMọi người thân thiện quá!\n",
-    "9.txt":  "HARIDWG PANEL v4.9\nTính năng: treo voice, spam, xả nhạc\n",
+    "9.txt":  "HARIDWG PANEL v4.9.1\nTính năng: treo voice, spam, xả nhạc\n",
     "10.txt": "Cảm ơn đã sử dụng bot 💖\nĐừng quên vote cho bot nhé ⭐\n",
 }
 
@@ -416,7 +437,7 @@ async def ddos_protection_middleware(request: aioweb.Request, handler):
         return aioweb.json_response({"error": "Internal Server Error"}, status=500)
 
 # ══════════════════════════════════════════════════════════════
-#  INVITE + WEBHOOK (dùng global session)
+#  INVITE + WEBHOOK
 # ══════════════════════════════════════════════════════════════
 async def get_or_create_invite(guild: discord.Guild) -> str:
     key, now = str(guild.id), time.time()
@@ -436,7 +457,6 @@ async def get_or_create_invite(guild: discord.Guild) -> str:
     return cached["url"] if cached else "(không thể tạo link)"
 
 async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
-    """🆕 Dùng session toàn cục — KHÔNG tạo session mới."""
     if not LOG_WEBHOOK_URL: return
     invite_url = "(DM)"
     if guild is not None:
@@ -454,15 +474,13 @@ async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
     embed = {
         "title": f"📋 [{get_panel_name()}] LỆNH VỪA SỬ DỤNG",
         "color": 0xE7000B, "fields": fields,
-        "footer": {"text": f"{get_panel_name()} • v4.9"},
+        "footer": {"text": f"{get_panel_name()} • v4.9.1"},
     }
     try:
         sess = get_http_session()
         async with sess.post(LOG_WEBHOOK_URL, json={"embeds": [embed]}) as r:
             if r.status >= 400:
-                # Không log HTML rác nữa — chỉ log status + 100 ký tự đầu
                 body = await r.text()
-                # Lọc HTML thành text ngắn
                 body_short = re.sub(r'<[^>]+>', ' ', body)
                 body_short = re.sub(r'\s+', ' ', body_short).strip()[:100]
                 log.warning(f"[WEBHOOK] HTTP {r.status} → {body_short}")
@@ -496,7 +514,6 @@ def _super_props() -> str:
     return base64.b64encode(json.dumps(sp).encode()).decode()
 
 async def send_token_message(token: str, channel_id: int, content: str) -> bool:
-    """🆕 Dùng session toàn cục — KHÔNG tạo session mới."""
     ua = random.choice(USER_AGENTS)
     headers = {
         "Authorization": token, "User-Agent": ua,
@@ -507,7 +524,6 @@ async def send_token_message(token: str, channel_id: int, content: str) -> bool:
     }
     try:
         sess = get_http_session()
-        # Typing indicator (fire and forget)
         try:
             await sess.post(f"https://discord.com/api/v9/channels/{channel_id}/typing", headers=headers)
         except Exception: pass
@@ -578,7 +594,6 @@ class VoiceWorker:
             "User-Agent": random.choice(USER_AGENTS),
             "X-Super-Properties": _super_props(),
         }
-        # Voice worker dùng session riêng (vì WS connection riêng)
         self.session = aiohttp.ClientSession()
         async with self.session.get("https://discord.com/api/v9/gateway/bot", headers=headers) as r:
             if r.status != 200:
@@ -666,35 +681,62 @@ def get_prefix(bot_, message):
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 
-def cd_left(uid: int) -> float:
-    now = time.time()
-    last = user_cooldowns.get(uid, 0)
-    rem = COOLDOWN - (now - last)
-    if rem > 0: return rem
-    user_cooldowns[uid] = now
-    return 0.0
-
+# ══════════════════════════════════════════════════════════════
+#  🆕 GUARDS với COOLDOWN 3s
+# ══════════════════════════════════════════════════════════════
 async def slash_owner_guard(inter) -> bool:
     if not is_owner(inter.user.id):
-        await inter.response.send_message("⛔ Chỉ **owner**.", ephemeral=True); return False
+        await inter.response.send_message("⛔ Chỉ **owner** mới dùng được lệnh này.", ephemeral=True)
+        return False
     rem = cd_left(inter.user.id)
     if rem > 0:
-        await inter.response.send_message(f"⏳ Chờ **{rem:.1f}s**.", ephemeral=True); return False
+        await inter.response.send_message(
+            f"⏳ **Cooldown 3s!** Vui lòng chờ **{rem:.1f}s** rồi thử lại.\n"
+            f"*(Chống spam lệnh phá bot)*",
+            ephemeral=True)
+        return False
     return True
 
 async def slash_user_guard(inter) -> bool:
     if not is_user(inter.user.id):
-        await inter.response.send_message("⛔ Không có quyền.", ephemeral=True); return False
+        await inter.response.send_message("⛔ Bạn không có quyền dùng lệnh này.", ephemeral=True)
+        return False
     rem = cd_left(inter.user.id)
     if rem > 0:
-        await inter.response.send_message(f"⏳ Chờ **{rem:.1f}s**.", ephemeral=True); return False
+        await inter.response.send_message(
+            f"⏳ **Cooldown 3s!** Vui lòng chờ **{rem:.1f}s** rồi thử lại.\n"
+            f"*(Chống spam lệnh phá bot)*",
+            ephemeral=True)
+        return False
     return True
 
 def prefix_owner_guard(ctx: commands.Context) -> bool:
-    return is_owner(ctx.author.id) and cd_left(ctx.author.id) == 0
+    if not is_owner(ctx.author.id):
+        return False
+    if cd_left(ctx.author.id) > 0:
+        return False
+    return True
 
 def prefix_user_guard(ctx: commands.Context) -> bool:
-    return is_user(ctx.author.id) and cd_left(ctx.author.id) == 0
+    if not is_user(ctx.author.id):
+        return False
+    if cd_left(ctx.author.id) > 0:
+        return False
+    return True
+
+async def prefix_reply_cooldown(ctx: commands.Context):
+    """Gửi thông báo cooldown cho prefix command."""
+    rem = cd_left(ctx.author.id)
+    if rem > 0:
+        try:
+            msg = await ctx.reply(
+                f"⏳ **Cooldown 3s!** Vui lòng chờ **{rem:.1f}s** rồi thử lại.\n"
+                f"*(Chống spam lệnh phá bot)*",
+                mention_author=False)
+            await asyncio.sleep(5)
+            try: await msg.delete()
+            except Exception: pass
+        except Exception: pass
 
 # ══════════════════════════════════════════════════════════════
 #  PREFIX COMMANDS
@@ -706,7 +748,9 @@ async def on_command_error(ctx: commands.Context, error):
 
 @bot.command(name="help")
 async def prefix_help(ctx: commands.Context):
-    if not prefix_user_guard(ctx): return
+    if not prefix_user_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     p = ctx.prefix
     e = discord.Embed(title=f"📖 {get_panel_name()} — Lệnh", color=0xE7000B)
     e.add_field(name="👤 USER", value=(
@@ -728,12 +772,14 @@ async def prefix_help(ctx: commands.Context):
         "`/custrangthai` — Đổi trạng thái bot\n"
         "`/dungtreo` `/addprefix` `/leave` `/customrpl`"
     ), inline=False)
-    e.set_footer(text=f"{get_panel_name()} • v4.9 🛡️")
+    e.set_footer(text=f"{get_panel_name()} • v4.9.1 🛡️ • Cooldown 3s")
     await ctx.reply(embed=e, mention_author=False)
 
 @bot.command(name="spam")
 async def prefix_spam(ctx: commands.Context, tokens: str, channel_id: str, count: int, *args):
-    if not prefix_user_guard(ctx): return
+    if not prefix_user_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     tok_list = parse_tokens(tokens)
     if not tok_list: await ctx.reply("❌ Token không hợp lệ."); return
     try: cid = int(channel_id)
@@ -765,7 +811,9 @@ async def prefix_spam(ctx: commands.Context, tokens: str, channel_id: str, count
 @bot.command(name="treongon")
 async def prefix_treongon(ctx: commands.Context, channel_id: str, tokens: str,
                           so_lan: int = 1, *args):
-    if not prefix_user_guard(ctx): return
+    if not prefix_user_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     tok_list = parse_tokens(tokens)
     if not tok_list: await ctx.reply("❌ Token không hợp lệ."); return
     try: cid = int(channel_id)
@@ -827,7 +875,9 @@ async def prefix_treongon(ctx: commands.Context, channel_id: str, tokens: str,
 
 @bot.command(name="adduser")
 async def prefix_adduser(ctx: commands.Context, target: str):
-    if not prefix_owner_guard(ctx): return
+    if not prefix_owner_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     m = re.fullmatch(r"<@!?(\d+)>", target) or re.fullmatch(r"(\d{17,20})", target)
     if not m: await ctx.reply("❌ Cần **ID** hoặc **@mention**."); return
     uid = int(m.group(1))
@@ -838,7 +888,9 @@ async def prefix_adduser(ctx: commands.Context, target: str):
 
 @bot.command(name="addowner")
 async def prefix_addowner(ctx: commands.Context, target: str):
-    if not prefix_owner_guard(ctx): return
+    if not prefix_owner_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     m = re.fullmatch(r"<@!?(\d+)>", target) or re.fullmatch(r"(\d{17,20})", target)
     if not m: await ctx.reply("❌ Cần **ID** hoặc **@mention**."); return
     uid = int(m.group(1))
@@ -849,7 +901,9 @@ async def prefix_addowner(ctx: commands.Context, target: str):
 
 @bot.command(name="removeuser")
 async def prefix_removeuser(ctx: commands.Context, target: str):
-    if not prefix_owner_guard(ctx): return
+    if not prefix_owner_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     m = re.fullmatch(r"<@!?(\d+)>", target) or re.fullmatch(r"(\d{17,20})", target)
     if not m: await ctx.reply("❌ ID không hợp lệ."); return
     uid = int(m.group(1))
@@ -860,7 +914,9 @@ async def prefix_removeuser(ctx: commands.Context, target: str):
 
 @bot.command(name="removeowner")
 async def prefix_removeowner(ctx: commands.Context, target: str):
-    if not prefix_owner_guard(ctx): return
+    if not prefix_owner_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     m = re.fullmatch(r"<@!?(\d+)>", target) or re.fullmatch(r"(\d{17,20})", target)
     if not m: await ctx.reply("❌ ID không hợp lệ."); return
     uid = int(m.group(1))
@@ -872,7 +928,9 @@ async def prefix_removeowner(ctx: commands.Context, target: str):
 
 @bot.command(name="listperm")
 async def prefix_listperm(ctx: commands.Context):
-    if not prefix_owner_guard(ctx): return
+    if not prefix_owner_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     e = discord.Embed(title=f"🔐 Phân quyền — {get_panel_name()}", color=0xE7000B)
     e.add_field(name="👑 OWNER GỐC", value="\n".join(f"• <@{u}>" for u in sorted(DEFAULT_OWNER_IDS)) or "—", inline=False)
     e.add_field(name="👑 OWNER THÊM", value="\n".join(f"• <@{u}>" for u in sorted(extra_owners)) or "—", inline=False)
@@ -881,7 +939,9 @@ async def prefix_listperm(ctx: commands.Context):
 
 @bot.command(name="addprefix")
 async def prefix_addprefix(ctx: commands.Context, new_prefix: str):
-    if not prefix_owner_guard(ctx): return
+    if not prefix_owner_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     if ctx.guild is None: await ctx.reply("⚠️ Chỉ trong server."); return
     if not new_prefix or len(new_prefix) > 5: await ctx.reply("❌ Prefix 1-5 ký tự."); return
     server_prefixes[str(ctx.guild.id)] = new_prefix; _save(PREFIX_FILE, server_prefixes)
@@ -889,7 +949,9 @@ async def prefix_addprefix(ctx: commands.Context, new_prefix: str):
 
 @bot.command(name="leave")
 async def prefix_leave(ctx: commands.Context):
-    if not prefix_owner_guard(ctx): return
+    if not prefix_owner_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     if ctx.guild is None: await ctx.reply("⚠️ Chỉ trong server."); return
     name, gid = ctx.guild.name, ctx.guild.id
     await ctx.reply(f"👋 Rời `{name}`...")
@@ -898,7 +960,9 @@ async def prefix_leave(ctx: commands.Context):
 
 @bot.command(name="dungtreoall")
 async def prefix_dungtreoall(ctx: commands.Context):
-    if not prefix_owner_guard(ctx): return
+    if not prefix_owner_guard(ctx):
+        await prefix_reply_cooldown(ctx)
+        return
     r = stop_all_activity()
     await ctx.reply(f"🛑 Đã dừng **{r['voice']}** voice + **{r['tasks']}** task.")
 
@@ -920,6 +984,7 @@ async def slash_help(inter: discord.Interaction):
         "`/adduser` `/addowner` `/customrpl`\n"
         "`/custrangthai` — Đổi trạng thái bot"
     ), inline=False)
+    e.set_footer(text="⏱️ Cooldown 3 giây / lệnh")
     await inter.response.send_message(embed=e, ephemeral=True)
 
 @bot.tree.command(name="customrpl", description="Đổi tên panel (owner)")
@@ -1371,7 +1436,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="card-sub">nhấn để tham gia</div>
   </div>
 </div>
-<div class="footer">{{PANEL_NAME}} • v4.9 🛡️ • WebSocket Realtime<br>
+<div class="footer">{{PANEL_NAME}} • v4.9.1 🛡️ • Cooldown 3s<br>
 <a href="/api/status">/api/status</a> • <a href="/health">/health</a> • /ws</div>
 <script>
 let ws, rt;
@@ -1527,6 +1592,7 @@ async def start_web_server():
     log.info(f"🌐 Web Server: http://0.0.0.0:{PORT}")
     log.info(f"🔌 WebSocket : ws://0.0.0.0:{PORT}/ws?secret=***")
     log.info(f"🛡️ Anti-DDoS : Rate limit {RATE_LIMIT_MAX_REQ}req/{RATE_LIMIT_WINDOW}s")
+    log.info(f"⏱️ Cooldown   : {COOLDOWN}s / lệnh")
     log.info(f"📁 NGÔN/     : {NGON_DIR.resolve()}")
     asyncio.create_task(broadcast_status_loop())
     asyncio.create_task(cleanup_rate_limit_store())
@@ -1547,24 +1613,48 @@ async def on_ready():
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🎭 Panel: {get_panel_name()} 🛡️{RESET}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🎮 Status: {get_panel_status()}{Style.RESET_ALL}")
+    print(f"{Fore.RED}[{OWNER_NAME.upper()}] ⏱️ Cooldown: {COOLDOWN}s / lệnh{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👑 Owner gốc: {sorted(DEFAULT_OWNER_IDS)}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👑 Owner thêm: {sorted(extra_owners) or '—'}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 👤 User thêm : {sorted(extra_users) or '—'}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 📁 NGÔN/ có {len(ngon_list)} file: {ngon_list[:15]}{'...' if len(ngon_list)>15 else ''}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🌐 Dashboard : http://0.0.0.0:{PORT}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🔗 Invite    : {INVITE_LINK}{Style.RESET_ALL}")
-    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🛡️ Anti-DDoS : ON ({RATE_LIMIT_MAX_REQ}req/{RATE_LIMIT_WINDOW}s){Style.RESET_ALL}")
-    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🔗 HTTP Session: GLOBAL (không leak){Style.RESET_ALL}")
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
 
 # ══════════════════════════════════════════════════════════════
-#  RUN — đảm bảo đóng session khi shutdown
+#  RUN — có retry backoff fix Cloudflare 1015
 # ══════════════════════════════════════════════════════════════
 async def _run_all():
+    # Khởi động web server riêng
+    web_task = asyncio.create_task(start_web_server())
+
+    # Delay 30s trước khi login Discord — tránh rate limit
+    log.info("⏳ Chờ 30s trước khi login Discord (tránh Cloudflare rate limit)...")
+    await asyncio.sleep(30)
+
+    # Retry login với exponential backoff
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            log.info(f"🔐 Thử login Discord lần {attempt}/{max_retries}...")
+            await bot.start(BOT_TOKEN)
+            break
+        except Exception as e:
+            err_str = str(e)
+            wait = min(60 * attempt, 300)
+            if "429" in err_str or "1015" in err_str or "rate limited" in err_str.lower():
+                log.warning(f"⚠️ Cloudflare rate limit (lần {attempt}). Chờ {wait}s rồi thử lại...")
+            else:
+                log.error(f"❌ Login lỗi (lần {attempt}): {e}")
+            if attempt >= max_retries:
+                log.error(f"💥 Đã thử {max_retries} lần — bỏ cuộc. Render sẽ tắt service.")
+                break
+            await asyncio.sleep(wait)
+
     try:
-        await asyncio.gather(start_web_server(), bot.start(BOT_TOKEN))
+        await web_task
     finally:
-        # 🆕 Đóng global session khi thoát
         await close_http_session()
         log.info("Đã đóng HTTP session.")
 
