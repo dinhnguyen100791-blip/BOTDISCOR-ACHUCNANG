@@ -9,8 +9,14 @@ discord.py>=2.3.2
 # ─── Đọc biến môi trường từ .env ────────────────────────────
 python-dotenv>=1.0.0
 
-# ─── HTTP client async (dùng cho token spam + webhook) ──────
+# ─── HTTP client async + WebSocket client ───────────────────
 aiohttp>=3.9.0
 
-# ─── Màu console (banner mặt nạ) ────────────────────────────
+# ─── WebSocket client (dùng cho bot.py / SelfVoiceBot) ──────
+websockets>=12.0
+
+# ─── Mã hóa voice (Discord voice cần) ───────────────────────
+PyNaCl>=1.5.0
+
+# ─── Màu console (banner) ───────────────────────────────────
 colorama>=0.4.6
