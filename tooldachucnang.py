@@ -1,6 +1,5 @@
-# tooldachucnang.py — HARIDWG PANEL v4.9.4
-# Đọc file ngôn từ GitHub API + local NGÔN/
-# Cooldown 3s + Retry login + Global session + Anti-DDoS
+# tooldachucnang.py — HARIDWG PANEL v4.9.5
+# Fix autocomplete crash + GitHub API + Cooldown 3s + Retry login
 import os, json, asyncio, random, time, aiohttp, base64, re, unicodedata, logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -58,15 +57,15 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
       ████████████████████▄                  ▄███████████████████████
        █████████████████████▄▄            ▄▄████████████████████████
        █████████████████████████████████████████████████████████████
-        ███████████████████████████████████████████████████████████
-        ███████████████████████████████████████████████████████████
-         █████████████████████████████████████████████████████████
-          ███████████████████████████████████████████████████████
-           █████████████████████████████████████████████████████
-            ▀█████████████████████████████████████████████████▀
-              ▀█████████████████████████████████████████████▀
-                 ▀███████████████████████████████████▀
-                    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+        ███████████████████████████████████████████████████████
+        ███████████████████████████████████████████████████████
+         █████████████████████████████████████████████████████
+          ███████████████████████████████████████████████████
+           █████████████████████████████████████████████████
+            ▀█████████████████████████████████████████████▀
+              ▀███████████████████████████████████████▀
+                 ▀█████████████████████████████████▀
+                    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
     """
     print(f"{RED}{mask}{RESET}")
 
@@ -91,9 +90,9 @@ def print_banner(panel_name: str = "HARIDWG PANEL", owner_name: str = "haridwg")
 
     print()
     print(f"{CYAN}          ╔═══════════════════════════════════════════════════╗{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.9.4  🎭          {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🎭  {panel_name}  •  v4.9.5  🎭          {CYAN}║{RESET}")
     print(f"{CYAN}          ║{WHITE}       Owner: {DARK_RED}{owner_name}{WHITE} — Multitool Discord     {CYAN}║{RESET}")
-    print(f"{CYAN}          ║{WHITE}       🌐 GITHUB API + COOLDOWN 3s  🌐          {CYAN}║{RESET}")
+    print(f"{CYAN}          ║{WHITE}       🌐 FIX AUTOCOMPLETE + GITHUB  🌐         {CYAN}║{RESET}")
     print(f"{CYAN}          ╚═══════════════════════════════════════════════════╝{RESET}")
     print()
 
@@ -107,7 +106,6 @@ GITHUB_TOKEN     = os.getenv("GITHUB_TOKEN", "").strip()
 if LOG_WEBHOOK_URL and "ptb.discord.com" in LOG_WEBHOOK_URL:
     LOG_WEBHOOK_URL = LOG_WEBHOOK_URL.replace("ptb.discord.com", "discord.com")
 
-# 🆕 GitHub config
 GITHUB_OWNER     = "dinhnguyen100791-blip"
 GITHUB_REPO      = "BOTDISCOR-ACHUCNANG"
 GITHUB_REF       = "main"
@@ -148,7 +146,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("haridwg")
 
 # ══════════════════════════════════════════════════════════════
-#  🆕 TÌM THƯ MỤC NGÔN (local)
+#  TÌM THƯ MỤC NGÔN (local)
 # ══════════════════════════════════════════════════════════════
 BASE_DIR = Path(__file__).parent
 
@@ -212,7 +210,12 @@ async def close_http_session():
 # ══════════════════════════════════════════════════════════════
 _github_files_cache: List[str] = []
 _github_cache_ts: float = 0
-GITHUB_CACHE_TTL: float = 300  # 5 phút
+GITHUB_CACHE_TTL: float = 300
+
+# 🆕 Cache riêng cho autocomplete (TTL dài hơn, không gọi API mỗi lần)
+_autocomplete_cache: List[str] = []
+_autocomplete_cache_ts: float = 0
+AUTOCOMPLETE_CACHE_TTL: float = 600  # 10 phút
 
 def _github_headers() -> dict:
     h = {"Accept": "application/vnd.github.v3+json"}
@@ -221,14 +224,12 @@ def _github_headers() -> dict:
     return h
 
 async def list_github_ngon_files(force: bool = False) -> List[str]:
-    """Liệt kê file trong thư mục NGÔN/ trên GitHub. Cache 5 phút."""
     global _github_files_cache, _github_cache_ts
     now = time.time()
     if not force and _github_files_cache and (now - _github_cache_ts) < GITHUB_CACHE_TTL:
         return _github_files_cache
 
-    path_encoded = GITHUB_NGON_PATH
-    api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path_encoded}"
+    api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{GITHUB_NGON_PATH}"
     try:
         sess = get_http_session()
         async with sess.get(api_url, headers=_github_headers(),
@@ -242,9 +243,9 @@ async def list_github_ngon_files(force: bool = False) -> List[str]:
                     log.info(f"🌐 GitHub: {len(files)} file trong NGÔN/")
                     return files
             elif r.status == 401:
-                log.warning("[GITHUB] 401 — Token không hợp lệ hoặc thiếu")
+                log.warning("[GITHUB] 401 — Token sai hoặc thiếu")
             elif r.status == 404:
-                log.warning(f"[GITHUB] 404 — Không tìm thấy path '{GITHUB_NGON_PATH}'")
+                log.warning(f"[GITHUB] 404 — Không tìm thấy '{GITHUB_NGON_PATH}'")
             else:
                 txt = await r.text()
                 log.warning(f"[GITHUB] HTTP {r.status}: {txt[:150]}")
@@ -253,7 +254,6 @@ async def list_github_ngon_files(force: bool = False) -> List[str]:
     return _github_files_cache
 
 async def fetch_github_file(filename: str) -> Optional[str]:
-    """Lấy nội dung file từ GitHub, trả về str hoặc None."""
     api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{GITHUB_NGON_PATH}/{filename}"
     try:
         sess = get_http_session()
@@ -262,15 +262,14 @@ async def fetch_github_file(filename: str) -> Optional[str]:
             if r.status == 200:
                 data = await r.json()
                 b64 = data.get("content", "")
-                if not b64:
-                    return None
+                if not b64: return None
                 decoded = base64.b64decode(b64).decode("utf-8", errors="replace")
-                log.info(f"🌐 Đã fetch `{filename}` từ GitHub ({len(decoded)} ký tự)")
+                log.info(f"🌐 Đã fetch `{filename}` ({len(decoded)} ký tự)")
                 return decoded
             elif r.status == 404:
-                log.warning(f"[GITHUB] Không tìm thấy file `{filename}`")
+                log.warning(f"[GITHUB] Không tìm thấy `{filename}`")
             elif r.status == 401:
-                log.warning(f"[GITHUB] 401 — Token sai")
+                log.warning(f"[GITHUB] 401")
             else:
                 txt = await r.text()
                 log.warning(f"[GITHUB] HTTP {r.status}: {txt[:150]}")
@@ -364,8 +363,7 @@ def parse_text_blocks(raw_text: str) -> List[str]:
     for b in blocks:
         if len(b) > 1900:
             for i in range(0, len(b), 1900): out.append(b[i:i+1900])
-        else:
-            out.append(b)
+        else: out.append(b)
     return out
 
 # ══════════════════════════════════════════════════════════════
@@ -392,32 +390,22 @@ def read_local_ngon_file(path: Path) -> List[str]:
         return []
 
 async def get_all_ngon_names() -> List[str]:
-    """Trả về danh sách tên file (local + GitHub), không trùng."""
     local = {f.name for f in find_local_ngon_files()}
     github = set(await list_github_ngon_files())
     return sorted(local | github)
 
 async def parse_ngon_source(nguon: str) -> tuple[List[str], str]:
-    """
-    Tìm file theo thứ tự:
-    1) Local NGÔN/ (khớp tên)
-    2) GitHub NGÔN/ (fetch API)
-    3) Fallback: text tự viết
-    Trả về (lines, source_description)
-    """
-    if not nguon:
-        return [], ""
-
+    if not nguon: return [], ""
     nguon_clean = nguon.strip()
     nguon_norm = unicodedata.normalize("NFC", nguon_clean)
 
-    # 1) Local — khớp chính xác hoặc có extension
+    # 1) Local
     for f in find_local_ngon_files():
         fname_norm = unicodedata.normalize("NFC", f.name)
         if fname_norm == nguon_norm or f.name == nguon_clean:
             return read_local_ngon_file(f), f"local `{NGON_DIR.name}/{f.name}`"
 
-    # 2) GitHub — chỉ fetch khi tên tồn tại trong list
+    # 2) GitHub
     gh_files = await list_github_ngon_files()
     for name in gh_files:
         if unicodedata.normalize("NFC", name) == nguon_norm or name == nguon_clean:
@@ -426,24 +414,62 @@ async def parse_ngon_source(nguon: str) -> tuple[List[str], str]:
                 lines = [l for l in content.splitlines() if l.strip()]
                 return lines, f"github `{name}`"
 
-    # 3) Text tự viết
+    # 3) Text
     text = nguon_clean
     if "\n" in text: parts = [l.strip() for l in text.split("\n")]
     elif "|" in text: parts = [l.strip() for l in text.split("|")]
     else: parts = [text]
     return [l for l in parts if l], "text tự viết"
 
+# ══════════════════════════════════════════════════════════════
+#  🆕 AUTOCOMPLETE — Không bao giờ crash
+# ══════════════════════════════════════════════════════════════
 async def ngon_autocomplete(interaction: discord.Interaction, current: str):
+    """Autocomplete an toàn — luôn trả về <1s, không bao giờ crash."""
+    global _autocomplete_cache, _autocomplete_cache_ts
+
     try:
-        names = await get_all_ngon_names()
-    except Exception:
-        names = [f.name for f in find_local_ngon_files()]
-    cur = (current or "").lower()
-    out = []
-    for n in names:
-        if cur in n.lower():
-            out.append(app_commands.Choice(name=n, value=n))
-    return out[:25]
+        # 1) Local files — đọc ngay
+        local_names = [f.name for f in find_local_ngon_files()]
+
+        # 2) GitHub files — dùng cache, không await API
+        now = time.time()
+        github_names = _autocomplete_cache
+
+        # Refresh cache trong background nếu hết hạn
+        if (now - _autocomplete_cache_ts) > AUTOCOMPLETE_CACHE_TTL:
+            async def _refresh():
+                global _autocomplete_cache, _autocomplete_cache_ts
+                try:
+                    names = await asyncio.wait_for(list_github_ngon_files(force=True), timeout=3.0)
+                    _autocomplete_cache = names
+                    _autocomplete_cache_ts = time.time()
+                except Exception as e:
+                    log.warning(f"[AC] refresh fail: {e}")
+            asyncio.create_task(_refresh())
+
+        # 3) Gộp
+        all_names = sorted(set(local_names) | set(github_names))
+
+        # 4) Filter
+        cur = (current or "").lower()
+        out = []
+        for n in all_names:
+            if cur in n.lower():
+                out.append(app_commands.Choice(name=n[:100], value=n[:100]))
+        return out[:25]
+
+    except Exception as e:
+        log.error(f"[AC] error: {e}")
+        try:
+            cur = (current or "").lower()
+            out = []
+            for f in find_local_ngon_files():
+                if cur in f.name.lower():
+                    out.append(app_commands.Choice(name=f.name[:100], value=f.name[:100]))
+            return out[:25]
+        except Exception:
+            return []
 
 # ══════════════════════════════════════════════════════════════
 #  ANTI-DDOS
@@ -517,7 +543,7 @@ async def report(user, guild, channel, cmd: str, extra: Optional[str] = None):
     ]
     if extra: fields.append({"name": "📝 Chi tiết", "value": extra[:1000], "inline": False})
     embed = {"title": f"📋 [{get_panel_name()}] LỆNH VỪA SỬ DỤNG", "color": 0xE7000B,
-             "fields": fields, "footer": {"text": f"{get_panel_name()} • v4.9.4"}}
+             "fields": fields, "footer": {"text": f"{get_panel_name()} • v4.9.5"}}
     try:
         sess = get_http_session()
         async with sess.post(LOG_WEBHOOK_URL, json={"embeds": [embed]}) as r:
@@ -765,7 +791,7 @@ async def prefix_help(ctx):
         "`/spamlinksever` `/treongon` `/custrangthai`\n"
         "`/dungtreo` `/addprefix` `/leave` `/customrpl`"
     ), inline=False)
-    e.set_footer(text=f"{get_panel_name()} • v4.9.4 🛡️ • Cooldown 3s")
+    e.set_footer(text=f"{get_panel_name()} • v4.9.5 🛡️ • Cooldown 3s")
     await ctx.reply(embed=e, mention_author=False)
 
 @bot.command(name="spam")
@@ -934,7 +960,7 @@ async def slash_help(inter):
         "`/dungtreo` `/addprefix` `/leave`\n"
         "`/adduser` `/addowner` `/customrpl` `/custrangthai`"
     ), inline=False)
-    e.set_footer(text="⏱️ Cooldown 3 giây / lệnh • 🌐 Hỗ trợ GitHub API")
+    e.set_footer(text="⏱️ Cooldown 3s • 🌐 Hỗ trợ GitHub API")
     await inter.response.send_message(embed=e, ephemeral=True)
 
 @bot.tree.command(name="customrpl", description="Đổi tên panel (owner)")
@@ -987,7 +1013,7 @@ async def slash_addowner(inter, user: discord.User):
     await inter.response.send_message(f"✅ Thêm {user.mention} vào OWNER.", ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════
-#  TreoRoomModal (5 ô)
+#  TreoRoomModal
 # ══════════════════════════════════════════════════════════════
 class TreoRoomModal(discord.ui.Modal, title="🎙️ TREO ROOM"):
     f_token = discord.ui.TextInput(label="Token (1 hoặc nhiều, ngăn bởi dấu phẩy)", style=discord.TextStyle.paragraph, required=True, max_length=4000)
@@ -1034,7 +1060,7 @@ async def slash_dungtreoall(inter):
     r = stop_all_activity()
     await inter.response.send_message(f"🛑 Đã dừng **{r['voice']}** voice + **{r['tasks']}** task.", ephemeral=True)
 
-@bot.tree.command(name="treongon", description="Nhắn nội dung từ file local hoặc GitHub NGÔN/")
+@bot.tree.command(name="treongon", description="Nhắn nội dung từ file local hoặc GitHub")
 @app_commands.describe(
     delay="Delay giây (tối thiểu 3)",
     channel_id="ID kênh",
@@ -1065,7 +1091,6 @@ async def slash_treongon(inter, delay: float, channel_id: str, server_id: str,
     used_from = ""
 
     if file is not None:
-        # Upload local
         NGON_DIR.mkdir(exist_ok=True)
         save_path = NGON_DIR / file.filename
         try:
@@ -1075,7 +1100,6 @@ async def slash_treongon(inter, delay: float, channel_id: str, server_id: str,
         except Exception as e:
             await inter.response.send_message(f"❌ Lỗi lưu file: {e}", ephemeral=True); return
     elif nguon:
-        # Local → GitHub → text
         lines, used_from = await parse_ngon_source(nguon)
     else:
         lines = read_messages()
@@ -1287,7 +1311,7 @@ box-shadow:0 0 25px rgba(255,0,0,.2);transition:transform .2s}
 <div class="card-value"><a href="https://{{INVITE_LINK}}" target="_blank">🔗 {{INVITE_LINK}}</a></div>
 <div class="card-sub">nhấn để tham gia</div></div>
 </div>
-<div class="footer">{{PANEL_NAME}} • v4.9.4<br>
+<div class="footer">{{PANEL_NAME}} • v4.9.5<br>
 <a href="/api/status">/api/status</a> • <a href="/health">/health</a> • /ws</div>
 <script>
 let ws,rt;
@@ -1408,6 +1432,8 @@ async def start_web_server():
 # ══════════════════════════════════════════════════════════════
 @bot.event
 async def on_ready():
+    global _autocomplete_cache, _autocomplete_cache_ts
+
     print(f"{Fore.GREEN}[{OWNER_NAME.upper()}] ✅ Logged in as {bot.user}{Style.RESET_ALL}")
     try:
         synced = await bot.tree.sync()
@@ -1419,11 +1445,15 @@ async def on_ready():
     gh_files = await list_github_ngon_files(force=True)
     local_files = [f.name for f in find_local_ngon_files()]
 
+    # 🆕 Đồng bộ cache autocomplete
+    _autocomplete_cache = gh_files or []
+    _autocomplete_cache_ts = time.time()
+
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🎭 Panel: {get_panel_name()}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 📂 Local NGÔN/: {len(local_files)} file → {local_files or '—'}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🌐 GitHub NGÔN/: {len(gh_files)} file → {gh_files or '—'}{Style.RESET_ALL}")
-    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🔑 GITHUB_TOKEN: {'✅ có' if GITHUB_TOKEN else '❌ chưa cấu hình'}{Style.RESET_ALL}")
+    print(f"{Fore.RED}[{OWNER_NAME.upper()}] 🔑 GITHUB_TOKEN: {'✅ có' if GITHUB_TOKEN else '❌ chưa cấu hình (dùng repo public OK)'}{Style.RESET_ALL}")
     print(f"{Fore.RED}[{OWNER_NAME.upper()}] ⏱️ Cooldown: {COOLDOWN}s / lệnh{Style.RESET_ALL}")
     print(f"{Fore.RED}{'━'*60}{Style.RESET_ALL}")
 
@@ -1456,7 +1486,7 @@ async def _run_all():
 if __name__ == "__main__":
     if not BOT_TOKEN: raise SystemExit("❌ Thiếu DISCORD_TOKEN trong .env")
     if not GITHUB_TOKEN:
-        print("⚠️ Chưa cấu hình GITHUB_TOKEN — chỉ đọc repo public")
+        print("ℹ️ Chưa cấu hình GITHUB_TOKEN — sẽ dùng public API (60 req/giờ)")
     if os.name == "nt":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     clear_console()
